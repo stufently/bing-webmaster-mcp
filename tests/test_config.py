@@ -23,6 +23,14 @@ def test_missing_key_is_an_auth_error(monkeypatch: pytest.MonkeyPatch, tmp_path)
         Settings.load()
 
 
+def test_indexnow_only_settings_can_load_without_bing_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("BING_WM_API_KEY", raising=False)
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+    assert Settings.load(require_api_key=False).api_key is None
+
+
 def test_key_does_not_leak_from_repr(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("BING_WM_API_KEY", "secret-key")
     monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))

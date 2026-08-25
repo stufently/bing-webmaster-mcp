@@ -10,7 +10,9 @@ ROW = re.compile(r"^\|\s*`(?P<method>\w+)`\s*\|.*\|\s*(?P<rw>[RW])\s*\|")
 
 
 def test_every_supported_write_is_registered_once() -> None:
-    registered = [operation.method for operation in WRITE_OPS.values()]
+    registered = [
+        operation.method for operation in WRITE_OPS.values() if operation.method != "IndexNow"
+    ]
     expected = [
         match["method"]
         for line in DOC.read_text().splitlines()

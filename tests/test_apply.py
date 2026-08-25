@@ -113,7 +113,32 @@ async def test_lost_write_response_marks_unknown_and_blocks_retry(tmp_path) -> N
         store.ensure_pending(plan.plan_id)
 
 
-@pytest.mark.parametrize("name", sorted(WRITE_OPS))
+async def test_indexnow_plan_verifies_key_then_submits(tmp_path) -> None:
+    store = PlanStore(tmp_path, 900)
+    args = sample_args("indexnow_submit")
+    prepared = WRITE_OPS["indexnow_submit"].prepare(args)
+    plan = store.create("indexnow_submit", "https://a.example", args, prepared.summary)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if request.method == "GET":
+            return httpx.Response(200, text=args["key"], request=request)
+        return httpx.Response(200, request=request)
+
+    result = await apply_plan(
+        plan.plan_id,
+        store=store,
+        client=None,
+        audit=AuditLog(tmp_path),
+        limiter=RateLimiter(tmp_path, max_per_day=None),
+        indexnow_transport=httpx.MockTransport(handler),
+    )
+    assert result["applied"] is True
+    assert calls == [prepared.body["keyLocation"], "https://api.indexnow.org/indexnow"]
+
+
+@pytest.mark.parametrize("name", sorted(name for name in WRITE_OPS if name != "indexnow_submit"))
 async def test_every_write_applies_as_post(tmp_path, name: str) -> None:
     settings = fake_settings(tmp_path)
     store = PlanStore(tmp_path, 900)

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
 from .audit import AuditLog
 from .client import BingClient
 from .errors import BingWebmasterError, PlanUnknownOutcome
 from .limits import RateLimiter
+from .ops import indexnow
 from .plans import PlanStore
 from .writes import prepare_write
 
@@ -16,9 +19,10 @@ async def apply_plan(
     plan_id: str,
     *,
     store: PlanStore,
-    client: BingClient,
+    client: BingClient | None,
     audit: AuditLog,
     limiter: RateLimiter,
+    indexnow_transport: httpx.AsyncBaseTransport | None = None,
 ) -> dict[str, Any]:
     with store.applying(plan_id) as plan:
         prepared = prepare_write(plan.operation, plan.args)
@@ -30,11 +34,25 @@ async def apply_plan(
             site=plan.site_url,
         )
         try:
-            result = await client.call(
-                prepared.method,
-                body=prepared.body,
-                mutating=True,
-            )
+            if prepared.method == "IndexNow":
+                async with httpx.AsyncClient(
+                    transport=indexnow_transport, timeout=30.0
+                ) as indexnow_http:
+                    result = await indexnow.verify_and_submit(
+                        indexnow_http,
+                        prepared.body["host"],
+                        prepared.body["key"],
+                        prepared.body["urlList"],
+                        prepared.body["keyLocation"],
+                    )
+            else:
+                if client is None:
+                    raise RuntimeError("a Bing client is required to apply this plan")
+                result = await client.call(
+                    prepared.method,
+                    body=prepared.body,
+                    mutating=True,
+                )
         except PlanUnknownOutcome as exc:
             store.mark_unknown(plan_id)
             audit.record("plan_apply_unknown", plan_id=plan_id, error=exc.to_dict())

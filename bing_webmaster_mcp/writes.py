@@ -66,6 +66,7 @@ _METHODS = {
     "add_site_roles": "AddSiteRoles",
     "enable_disable_query_parameter": "EnableDisableQueryParameter",
     "fetch_url": "FetchUrl",
+    "indexnow_submit": "IndexNow",
     "remove_blocked_url": "RemoveBlockedUrl",
     "remove_country_region_settings": "RemoveCountryRegionSettings",
     "remove_deep_link_block": "RemoveDeepLinkBlock",
@@ -95,6 +96,8 @@ def prepare_write(name: str, args: dict[str, Any]) -> PreparedWrite:
 
 
 def _prepare(operation: WriteOp, args: dict[str, Any]) -> PreparedWrite:
+    if operation.name == "indexnow_submit":
+        return _prepare_indexnow(operation, args)
     site = normalise_site(_string(args, "site_url"))
     name = operation.name
     body: dict[str, Any] = {"siteUrl": site}
@@ -194,6 +197,34 @@ def _prepare(operation: WriteOp, args: dict[str, Any]) -> PreparedWrite:
         sanitize_text(summary),
         cost,
         quota_method,
+    )
+
+
+def _prepare_indexnow(operation: WriteOp, args: dict[str, Any]) -> PreparedWrite:
+    from .ops.indexnow import validate_urls
+
+    host = _string(args, "host")
+    key = _string(args, "key")
+    raw_urls = args.get("url_list")
+    if not isinstance(raw_urls, list) or not all(isinstance(url, str) for url in raw_urls):
+        raise InvalidRequest("url_list must be a list of URL strings")
+    location = args.get("key_location")
+    if location is not None and not isinstance(location, str):
+        raise InvalidRequest("key_location must be a URL string")
+    normalized_host, normalized_location, urls = validate_urls(host, key, raw_urls, location)
+    return PreparedWrite(
+        operation.method,
+        {
+            "host": normalized_host,
+            "key": key,
+            "keyLocation": normalized_location,
+            "urlList": urls,
+        },
+        sanitize_text(
+            f"submit {len(urls)} URLs for {normalized_host} through IndexNow "
+            "(seven participating engines; not Google)"
+        ),
+        len(urls),
     )
 
 

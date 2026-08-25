@@ -162,13 +162,18 @@ async def create_write_plan(
     args: dict[str, Any],
     *,
     settings: Settings,
-    client: BingClient,
+    client: BingClient | None,
 ) -> Plan:
     prepared = prepare_write(operation, args)
-    site_url = normalise_site(str(args.get("site_url", "")))
+    if operation == "indexnow_submit":
+        site_url = f"https://{prepared.body['host']}"
+    else:
+        site_url = normalise_site(str(args.get("site_url", "")))
     settings.check_site_allowed(site_url)
 
     if prepared.quota_method is not None:
+        if client is None:
+            raise RuntimeError("a Bing client is required for quota-aware plans")
         quota = await client.call(prepared.quota_method, {"siteUrl": site_url})
         if not isinstance(quota, dict) or not isinstance(quota.get("DailyQuota"), int):
             raise MalformedResponse(

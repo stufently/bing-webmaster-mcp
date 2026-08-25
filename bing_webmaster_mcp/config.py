@@ -17,7 +17,7 @@ def _default_state_dir() -> Path:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BING_WM_", extra="ignore")
 
-    api_key: SecretStr
+    api_key: SecretStr | None = None
     base_url: str = "https://ssl.bing.com/webmaster/api.svc/json"
     calls_per_second: float = Field(default=5.0, gt=0)
     max_attempts: int = Field(default=3, ge=1, le=10)
@@ -30,21 +30,21 @@ class Settings(BaseSettings):
     http_bearer_token: SecretStr | None = None
 
     @classmethod
-    def load(cls) -> Settings:
+    def load(cls, *, require_api_key: bool = True) -> Settings:
         try:
-            return cls()
+            settings = cls()
         except ValidationError as exc:
-            missing_key = any(error["loc"] == ("api_key",) for error in exc.errors())
-            error_type = AuthFailed if missing_key else InvalidRequest
-            raise error_type(
-                "BING_WM_API_KEY is not set" if missing_key else "invalid BING_WM_* configuration",
-                suggestion=(
-                    "create a key in Bing Webmaster Tools -> Settings -> API Access"
-                    if missing_key
-                    else "check the named environment variables"
-                ),
+            raise InvalidRequest(
+                "invalid BING_WM_* configuration",
+                suggestion="check the named environment variables",
                 details={"fields": [str(error["loc"][0]) for error in exc.errors()]},
             ) from exc
+        if require_api_key and settings.api_key is None:
+            raise AuthFailed(
+                "BING_WM_API_KEY is not set",
+                suggestion="create a key in Bing Webmaster Tools -> Settings -> API Access",
+            )
+        return settings
 
     def check_site_allowed(self, site_url: str) -> None:
         if _normalise_for_policy(site_url) in {

@@ -20,6 +20,7 @@ EXPECTED = {
     "add_site_roles",
     "enable_disable_query_parameter",
     "fetch_url",
+    "indexnow_submit",
     "remove_blocked_url",
     "remove_country_region_settings",
     "remove_deep_link_block",
@@ -65,6 +66,11 @@ def sample_args(name: str) -> dict:
         },
         "enable_disable_query_parameter": {"query_parameter": "utm_source", "is_enabled": True},
         "fetch_url": {"url": f"{SITE}/p"},
+        "indexnow_submit": {
+            "host": "a.example",
+            "key": "0123456789abcdef0123456789abcdef",
+            "url_list": [f"{SITE}/p"],
+        },
         "remove_blocked_url": {
             "blocked_url": {"Url": f"{SITE}/secret", "EntityType": 0, "RequestType": 0}
         },
@@ -103,6 +109,8 @@ def sample_args(name: str) -> dict:
         "submit_url_batch": {"url_list": [f"{SITE}/p"]},
         "verify_site": {},
     }
+    if name == "indexnow_submit":
+        return extras[name]
     return {"site_url": SITE, **extras[name]}
 
 
@@ -114,7 +122,8 @@ def test_registry_is_the_complete_supported_write_surface() -> None:
 @pytest.mark.parametrize("name", sorted(EXPECTED))
 def test_every_write_prepares_verified_camel_case_body(name: str) -> None:
     prepared = prepare_write(name, sample_args(name))
-    assert prepared.body["siteUrl"] == SITE
+    if name != "indexnow_submit":
+        assert prepared.body["siteUrl"] == SITE
     assert prepared.summary
     assert prepared.cost >= 1
 
