@@ -175,3 +175,7 @@ def test_site_url_with_an_unparsable_port_is_rejected() -> None:
 def test_ipv6_site_keeps_its_brackets() -> None:
     assert normalise_site("https://[2001:db8::1]/") == "https://[2001:db8::1]"
     assert normalise_site("https://[2001:db8::1]:8443/p") == "https://[2001:db8::1]:8443/p"
+
+
+def test_bare_host_with_a_port_is_not_read_as_a_scheme() -> None:
+    assert normalise_site("example.com:8443") == "https://example.com:8443"

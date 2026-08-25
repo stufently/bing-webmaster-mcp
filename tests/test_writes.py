@@ -214,13 +214,21 @@ def test_url_with_an_unparsable_port_inside_a_complex_object_is_rejected() -> No
         prepare_write("submit_site_move", args)
 
 
-@pytest.mark.parametrize(
-    "url",
-    ["http://a.example/p", "https://a.example:8443/p"],
-)
-def test_a_url_on_a_different_origin_does_not_belong_to_the_site(url: str) -> None:
+def test_a_url_on_another_port_does_not_belong_to_the_site() -> None:
     with pytest.raises(InvalidRequest):
-        prepare_write("submit_url", {"site_url": SITE, "url": url})
+        prepare_write("submit_url", {"site_url": SITE, "url": "https://a.example:8443/p"})
+    with pytest.raises(InvalidRequest):
+        prepare_write(
+            "submit_url",
+            {"site_url": "https://a.example:8443", "url": "https://a.example/p"},
+        )
+
+
+def test_a_legacy_http_site_may_submit_its_https_urls() -> None:
+    prepared = prepare_write(
+        "submit_url", {"site_url": "http://a.example", "url": "https://a.example/p"}
+    )
+    assert prepared.body["url"] == "https://a.example/p"
 
 
 def test_a_site_on_an_explicit_port_keeps_its_own_urls() -> None:

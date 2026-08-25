@@ -28,6 +28,8 @@ async def apply_plan(
 ) -> dict[str, Any]:
     with store.applying(plan_id) as plan:
         prepared = prepare_write(plan.operation, plan.args)
+        if prepared.method != "IndexNow" and client is None:
+            raise RuntimeError("a Bing client is required to apply this plan")
         # Re-checked here, not just at plan creation: the denylist may have grown since,
         # and a plan can sit pending for a whole BING_WM_PLAN_TTL_SECONDS.
         try:
@@ -35,21 +37,43 @@ async def apply_plan(
         except BingWebmasterError as exc:
             audit.record("plan_apply_denied", plan_id=plan_id, error=exc.to_dict())
             raise
+
         # Reserved before the request, not counted after it: a ceiling that refuses once
         # the write has already been sent would leave the plan pending and invite a retry.
         reserved_day = limiter.consume(plan.site_url, prepared.cost)
-        audit.record(
-            "plan_apply_attempted",
-            plan_id=plan_id,
-            operation=plan.operation,
-            site=plan.site_url,
-        )
+        try:
+            if prepared.method == "IndexNow":
+                # Fetching the key file sends no submission, so a failure or an interrupt
+                # here is an ordinary failure and stays outside the unknown-outcome zone.
+                async with httpx.AsyncClient(
+                    transport=indexnow_transport, timeout=30.0
+                ) as preflight:
+                    await indexnow.verify_key_file(
+                        preflight,
+                        prepared.body["host"],
+                        prepared.body["key"],
+                        prepared.body["keyLocation"],
+                    )
+            audit.record(
+                "plan_apply_attempted",
+                plan_id=plan_id,
+                operation=plan.operation,
+                site=plan.site_url,
+            )
+        except BingWebmasterError as exc:
+            limiter.release(plan.site_url, prepared.cost, day=reserved_day)
+            audit.record("plan_apply_failed", plan_id=plan_id, error=exc.to_dict())
+            raise
+        except BaseException:
+            limiter.release(plan.site_url, prepared.cost, day=reserved_day)
+            raise
+
         try:
             if prepared.method == "IndexNow":
                 async with httpx.AsyncClient(
                     transport=indexnow_transport, timeout=30.0
                 ) as indexnow_http:
-                    result = await indexnow.verify_and_submit(
+                    result = await indexnow.submit(
                         indexnow_http,
                         prepared.body["host"],
                         prepared.body["key"],
@@ -57,8 +81,6 @@ async def apply_plan(
                         prepared.body["keyLocation"],
                     )
             else:
-                if client is None:
-                    raise RuntimeError("a Bing client is required to apply this plan")
                 result = await client.call(
                     prepared.method,
                     body=prepared.body,
@@ -74,12 +96,16 @@ async def apply_plan(
             limiter.release(plan.site_url, prepared.cost, day=reserved_day)
             audit.record("plan_apply_failed", plan_id=plan_id, error=exc.to_dict())
             raise
-        except BaseException:
-            # Ctrl-C during the request cancels the task, the lock is released by the
-            # context manager, and a pending plan invites a retry of a write that may
-            # already have been sent. Record it as unknown and let the cancel through.
+        except BaseException as exc:
+            # Ctrl-C or any other interruption once dispatch has begun: the lock is
+            # released by the context manager, so a plan left pending would invite a
+            # retry of a write that may already have been sent.
             store.mark_unknown(plan_id)
-            audit.record("plan_apply_unknown", plan_id=plan_id, error={"code": "CANCELLED"})
+            audit.record(
+                "plan_apply_unknown",
+                plan_id=plan_id,
+                error={"code": "INTERRUPTED", "type": type(exc).__name__},
+            )
             raise
 
         store.mark_applied(plan_id)

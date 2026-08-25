@@ -10,7 +10,8 @@ from ..client import BingClient
 from ..errors import InvalidRequest
 from ..render import sanitize
 
-_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+# Requires "://": "example.com:8443" is a host and a port, not a scheme.
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
 def split_url(value: str, name: str) -> SplitResult:

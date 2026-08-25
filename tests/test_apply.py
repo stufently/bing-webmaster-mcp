@@ -371,3 +371,56 @@ async def test_cancelled_write_is_recorded_as_unknown(tmp_path) -> None:
             )
     assert store.get(plan.plan_id).state == "unknown_outcome"
     assert not list((tmp_path / "plans").glob("*.lock"))
+
+
+async def test_interrupt_during_the_indexnow_preflight_leaves_the_plan_retryable(
+    tmp_path,
+) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    args = sample_args("indexnow_submit")
+    prepared = WRITE_OPS["indexnow_submit"].prepare(args)
+    plan = store.create("indexnow_submit", "https://a.example", args, prepared.summary)
+    limiter = RateLimiter(tmp_path, max_per_day=5)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await apply_plan(
+            plan.plan_id,
+            settings=settings,
+            store=store,
+            client=None,
+            audit=AuditLog(tmp_path),
+            limiter=limiter,
+            indexnow_transport=httpx.MockTransport(handler),
+        )
+    # Nothing was submitted, so the plan stays usable and the reservation is given back.
+    assert store.get(plan.plan_id).state == "pending"
+    limiter.check("https://a.example", 5)
+
+
+async def test_a_failed_audit_write_gives_the_reservation_back(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    limiter = RateLimiter(tmp_path, max_per_day=1)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+
+    class BrokenAudit(AuditLog):
+        def record(self, event: str, **fields: object) -> None:
+            raise OSError("audit log is unwritable")
+
+    transport = bing_transport({"AddSite": None})
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(OSError):
+            await apply_plan(
+                plan.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=BrokenAudit(tmp_path),
+                limiter=limiter,
+            )
+    assert transport.calls == []
+    limiter.check("https://a.example", 1)

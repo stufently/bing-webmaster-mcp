@@ -37,6 +37,9 @@
 - Refuse a denylist entry that names no host, and detect the scheme by parsing so an
   entry like `a.example/shop//eu` still matches.
 - Record a cancelled write as an unknown outcome instead of leaving the plan pending.
-- Compare the whole origin, not only the hostname, when checking that a URL belongs to
-  the site, and keep the brackets on an IPv6 authority.
+- Compare host and non-default port, not only the hostname, when checking that a URL
+  belongs to the site, and keep the brackets on an IPv6 authority. The scheme stays out
+  of it: a legacy `http://` property still submits its live `https://` URLs.
+- Keep the IndexNow key-file check out of the unknown-outcome zone, and release the
+  reservation if the audit write itself fails.
 - Reject a tick date whose timezone minutes are 60 or more.

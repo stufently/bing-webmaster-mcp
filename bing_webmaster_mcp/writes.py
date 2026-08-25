@@ -277,22 +277,24 @@ def _site_url(args: dict[str, Any], name: str, site: str) -> str:
     return value
 
 
-_DEFAULT_PORTS = {"http": 80, "https": 443}
+def _authority(parsed: SplitResult) -> tuple[str | None, int | None]:
+    """Host and non-default port.
 
-
-def _origin(parsed: SplitResult) -> tuple[str, str | None, int | None]:
-    port = parsed.port if parsed.port is not None else _DEFAULT_PORTS.get(parsed.scheme)
-    return parsed.scheme, parsed.hostname, port
+    The scheme is deliberately not part of ownership: Bing shows legacy properties as
+    ``http://`` and they still submit their live ``https://`` URLs. A port that is not
+    the scheme default does identify a different site, so it is compared.
+    """
+    port = parsed.port if parsed.port not in (None, 80, 443) else None
+    return parsed.hostname, port
 
 
 def _ensure_site_url(value: str, site: str) -> None:
     # Called directly with values lifted out of complex objects, so the scheme is checked
-    # here too: matching only the hostname would let "ftp://a.example/p" through, and a
-    # site on one port accept URLs on another.
+    # here too: matching only the hostname would let "ftp://a.example/p" through.
     _ensure_absolute(value, "url")
     candidate = _split(value, "url")
     owner = _split(site, "site_url")
-    if _origin(candidate) != _origin(owner):
+    if _authority(candidate) != _authority(owner):
         raise InvalidRequest(f"URL {value!r} does not belong to site {site!r}")
     owner_path = owner.path.rstrip("/")
     if (
