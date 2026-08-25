@@ -9,8 +9,9 @@ Bing is the retrieval layer behind ChatGPT search and Copilot, so Bing Webmaster
 Tools is where the ground truth about AI-search visibility lives. The API is free.
 
 > **Status: design.** Nothing is implemented yet. The contract for the first
-> implementation is [`SPEC.md`](SPEC.md); conventions for whoever writes it are in
-> [`AGENTS.md`](AGENTS.md).
+> implementation is [`SPEC.md`](SPEC.md); the task-by-task build order is
+> [`docs/superpowers/plans/2026-08-25-bing-webmaster-mcp.md`](docs/superpowers/plans/2026-08-25-bing-webmaster-mcp.md);
+> conventions for whoever writes it are in [`AGENTS.md`](AGENTS.md).
 
 ## What makes it different
 
