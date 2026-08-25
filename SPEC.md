@@ -140,13 +140,11 @@ Groups, with counts to build toward:
 | Inbound links | 4 | `GetLinkCounts`, `GetUrlLinks`, `GetConnectedPages` | `AddConnectedPage` |
 | Keyword research | 3 | `GetKeyword`, `GetKeywordStats`, `GetRelatedKeywords` | — |
 
-> ⚠️ **Task 0, before writing any client code.** The research pass produced a
-> count conflict: the interface reference was reported as listing 57 methods,
-> while the compiled table above has 62 rows. Re-fetch
-> <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.iwebmasterapi?view=bing-webmaster-dotnet>
-> and reconcile 1:1. Every name above is plausible and corroborated by the two
-> competitor implementations, so the likely defect is a duplicate or a dropped row
-> in transcription — but settle it before generating code from the table.
+> **Resolved 2026-08-25 from the primary source.** `IWebmasterApi` lists 62 methods:
+> 59 supported methods in the grouped table above plus the three deliberately excluded
+> obsolete deep-link methods. The earlier report of 57 was incorrect. The complete
+> transcription, exact parameter names and method-level `WebGet`/`WebInvoke` verbs are
+> recorded in `docs/api-surface.md`.
 >
 > Complex parameter types (`BlockedUrl`, `CrawlSettings`, `FilterProperties`,
 > `SiteMoveSettings`, `CountryRegionSettings`, `BlockReason`, `DeepLinkWeight`,
