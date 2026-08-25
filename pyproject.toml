@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bing-webmaster-mcp"
+version = "0.1.0"
+description = "bing-webmaster-mcp gives an AI agent read access to what Bing knows about your sites and a reviewed path for every write."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+# Floors, not pins. A published package that pins exact versions breaks every
+# environment that already has a working newer one. Exact versions are frozen in
+# constraints.txt, which is what CI and the Docker image install.
+dependencies = [
+    "httpx>=0.28,<1",
+    "pydantic>=2.11,<3",
+    "pydantic-settings>=2.6,<3",
+    "click>=8.2,<9",
+    "mcp>=2.1,<3",
+]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.9"]
+
+[project.scripts]
+bing-wm = "bing_webmaster_mcp.cli:main"
+bing-webmaster-mcp = "bing_webmaster_mcp.mcp_server:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["tests"]
+filterwarnings = ["error::DeprecationWarning:bing_webmaster_mcp.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["docs/superpowers"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
