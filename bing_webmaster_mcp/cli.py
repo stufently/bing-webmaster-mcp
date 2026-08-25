@@ -1,0 +1,674 @@
+"""Thin Click facade over the shared operations and plan/apply boundary."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import Awaitable, Callable
+from datetime import date
+from functools import wraps
+from pathlib import Path
+from typing import Any
+
+import click
+
+from .apply import apply_plan
+from .audit import AuditLog
+from .client import BingClient
+from .config import Settings
+from .errors import BingWebmasterError, InvalidRequest
+from .limits import RateLimiter
+from .ops import (
+    blocking,
+    crawl,
+    geo,
+    indexnow,
+    keywords,
+    links,
+    params,
+    sitemaps,
+    sites,
+    submission,
+    traffic,
+)
+from .plans import Plan, PlanStore, create_write_plan
+from .writes import WRITE_OPS
+
+
+def _load_settings(*, require_api_key: bool = True) -> Settings:
+    return Settings.load(require_api_key=require_api_key)
+
+
+def _transport() -> Any:
+    return None
+
+
+def run_async(awaitable: Awaitable[Any]) -> Any:
+    return asyncio.run(awaitable)
+
+
+def guarded(function: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(function)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return function(*args, **kwargs)
+        except BingWebmasterError as exc:
+            click.echo(json.dumps(exc.to_dict(), indent=2, ensure_ascii=False), err=True)
+            raise click.exceptions.Exit(1) from exc
+
+    return wrapper
+
+
+def _json_default(value: Any) -> str:
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
+
+
+def emit(result: Any, as_json: bool) -> None:
+    if as_json:
+        click.echo(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default))
+        return
+    if isinstance(result, list):
+        _emit_table(result)
+    elif isinstance(result, dict):
+        _emit_table([result])
+    else:
+        click.echo(str(result))
+
+
+def _display_value(value: Any) -> str:
+    if isinstance(value, dict) and value.get("untrusted") is True:
+        return f"⚠ {value.get('value', '')}"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=_json_default)
+    return _json_default(value)
+
+
+def _emit_table(rows: list[Any]) -> None:
+    if not rows:
+        click.echo("(no results)")
+        return
+    if not all(isinstance(row, dict) for row in rows):
+        click.echo(json.dumps(rows, indent=2, ensure_ascii=False, default=_json_default))
+        return
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    rendered = [[_display_value(row.get(column, "")) for column in columns] for row in rows]
+    widths = [
+        min(60, max(len(column), *(len(values[index]) for values in rendered)))
+        for index, column in enumerate(columns)
+    ]
+    click.echo(
+        "  ".join(
+            column[: widths[index]].ljust(widths[index]) for index, column in enumerate(columns)
+        )
+    )
+    click.echo("  ".join("-" * width for width in widths))
+    for values in rendered:
+        click.echo(
+            "  ".join(
+                values[index][: widths[index]].ljust(widths[index]) for index in range(len(columns))
+            )
+        )
+
+
+async def _read(function: Callable[..., Awaitable[Any]], *args: Any) -> Any:
+    settings = _load_settings()
+    async with BingClient(settings, transport=_transport()) as client:
+        return await function(client, *args)
+
+
+def _limit(result: Any, limit: int | None) -> Any:
+    return result[:limit] if limit is not None and isinstance(result, list) else result
+
+
+async def _create_plan(operation: str, args: dict[str, Any]) -> Plan:
+    require_api_key = operation != "indexnow_submit"
+    settings = _load_settings(require_api_key=require_api_key)
+    if operation == "indexnow_submit":
+        return await create_write_plan(operation, args, settings=settings, client=None)
+    async with BingClient(settings, transport=_transport()) as client:
+        return await create_write_plan(operation, args, settings=settings, client=client)
+
+
+def _plan_payload(plan: Plan) -> dict[str, Any]:
+    return {
+        "plan_id": plan.plan_id,
+        "summary": plan.summary,
+        "state": plan.state,
+        "expires_at": plan.expires_at,
+        "apply_with": f"bing-wm plan apply {plan.plan_id}",
+    }
+
+
+def _date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise click.BadParameter("use YYYY-MM-DD") from exc
+
+
+def json_option(function: Callable[..., Any]) -> Callable[..., Any]:
+    return click.option("--json", "as_json", is_flag=True, help="Print machine-readable JSON.")(
+        function
+    )
+
+
+@click.group()
+@click.version_option()
+def main() -> None:
+    """Inspect and safely change Bing Webmaster Tools data."""
+
+
+@main.group("sites")
+def sites_group() -> None:
+    """Sites, verification and delegated roles."""
+
+
+@sites_group.command("list")
+@json_option
+@guarded
+def sites_list(as_json: bool) -> None:
+    emit(run_async(_read(sites.list_sites)), as_json)
+
+
+@sites_group.command("show")
+@click.argument("site")
+@json_option
+@guarded
+def sites_show(site: str, as_json: bool) -> None:
+    emit(run_async(_read(sites.show_site, site)), as_json)
+
+
+@sites_group.command("roles")
+@click.argument("site")
+@click.option("--include-all-subdomains", is_flag=True)
+@json_option
+@guarded
+def sites_roles(site: str, include_all_subdomains: bool, as_json: bool) -> None:
+    emit(run_async(_read(sites.site_roles, site, include_all_subdomains)), as_json)
+
+
+@sites_group.command("moves")
+@click.argument("site")
+@json_option
+@guarded
+def sites_moves(site: str, as_json: bool) -> None:
+    emit(run_async(_read(sites.site_moves, site)), as_json)
+
+
+@main.group("traffic")
+def traffic_group() -> None:
+    """Queries, pages, clicks, impressions and rank."""
+
+
+def _traffic_list(function: Callable[..., Awaitable[Any]], site: str, limit: int | None) -> Any:
+    return _limit(run_async(_read(function, site)), limit)
+
+
+@traffic_group.command("queries")
+@click.argument("site")
+@click.option("--limit", type=click.IntRange(min=1))
+@json_option
+@guarded
+def traffic_queries(site: str, limit: int | None, as_json: bool) -> None:
+    emit(_traffic_list(traffic.query_stats, site, limit), as_json)
+
+
+@traffic_group.command("pages")
+@click.argument("site")
+@click.option("--limit", type=click.IntRange(min=1))
+@json_option
+@guarded
+def traffic_pages(site: str, limit: int | None, as_json: bool) -> None:
+    emit(_traffic_list(traffic.page_stats, site, limit), as_json)
+
+
+@traffic_group.command("query")
+@click.argument("site")
+@click.argument("query")
+@json_option
+@guarded
+def traffic_query(site: str, query: str, as_json: bool) -> None:
+    emit(run_async(_read(traffic.query_traffic_stats, site, query)), as_json)
+
+
+@traffic_group.command("query-pages")
+@click.argument("site")
+@click.argument("query")
+@json_option
+@guarded
+def traffic_query_pages(site: str, query: str, as_json: bool) -> None:
+    emit(run_async(_read(traffic.query_page_stats, site, query)), as_json)
+
+
+@traffic_group.command("query-page")
+@click.argument("site")
+@click.argument("query")
+@click.argument("page")
+@json_option
+@guarded
+def traffic_query_page(site: str, query: str, page: str, as_json: bool) -> None:
+    emit(run_async(_read(traffic.query_page_detail_stats, site, query, page)), as_json)
+
+
+@traffic_group.command("page")
+@click.argument("site")
+@click.argument("page")
+@json_option
+@guarded
+def traffic_page(site: str, page: str, as_json: bool) -> None:
+    emit(run_async(_read(traffic.page_query_stats, site, page)), as_json)
+
+
+@traffic_group.command("rank")
+@click.argument("site")
+@json_option
+@guarded
+def traffic_rank(site: str, as_json: bool) -> None:
+    emit(run_async(_read(traffic.rank_and_traffic_stats, site)), as_json)
+
+
+@main.group("index")
+def index_group() -> None:
+    """Index and URL traffic details."""
+
+
+@index_group.command("url")
+@click.argument("site")
+@click.argument("url")
+@json_option
+@guarded
+def index_url(site: str, url: str, as_json: bool) -> None:
+    emit(run_async(_read(crawl.url_info, site, url)), as_json)
+
+
+@index_group.command("url-traffic")
+@click.argument("site")
+@click.argument("url")
+@json_option
+@guarded
+def index_url_traffic(site: str, url: str, as_json: bool) -> None:
+    emit(run_async(_read(crawl.url_traffic_info, site, url)), as_json)
+
+
+@index_group.command("children")
+@click.argument("site")
+@click.argument("url")
+@click.option("--page", type=click.IntRange(min=0), default=0, show_default=True)
+@json_option
+@guarded
+def index_children(site: str, url: str, page: int, as_json: bool) -> None:
+    emit(run_async(_read(crawl.children_url_info, site, url, page)), as_json)
+
+
+@index_group.command("children-traffic")
+@click.argument("site")
+@click.argument("url")
+@click.option("--page", type=click.IntRange(min=0), default=0, show_default=True)
+@json_option
+@guarded
+def index_children_traffic(site: str, url: str, page: int, as_json: bool) -> None:
+    emit(run_async(_read(crawl.children_url_traffic_info, site, url, page)), as_json)
+
+
+@main.group("crawl")
+def crawl_group() -> None:
+    """Crawl statistics, issues, settings and fetched URLs."""
+
+
+def _register_site_read(
+    group: click.Group, command_name: str, function: Callable[..., Any]
+) -> None:
+    @group.command(command_name)
+    @click.argument("site")
+    @json_option
+    @guarded
+    def command(site: str, as_json: bool) -> None:
+        emit(run_async(_read(function, site)), as_json)
+
+
+for _name, _function in {
+    "stats": crawl.crawl_stats,
+    "issues": crawl.crawl_issues,
+    "settings": crawl.crawl_settings,
+    "fetched": crawl.fetched_urls,
+}.items():
+    _register_site_read(crawl_group, _name, _function)
+
+
+@crawl_group.command("fetched-details")
+@click.argument("site")
+@click.argument("url")
+@json_option
+@guarded
+def crawl_fetched_details(site: str, url: str, as_json: bool) -> None:
+    emit(run_async(_read(crawl.fetched_url_details, site, url)), as_json)
+
+
+@main.group("links")
+def links_group() -> None:
+    """Inbound link counts and details."""
+
+
+@links_group.command("counts")
+@click.argument("site")
+@click.option("--page", type=click.IntRange(min=0, max=32767), default=0)
+@json_option
+@guarded
+def links_counts(site: str, page: int, as_json: bool) -> None:
+    emit(run_async(_read(links.link_counts, site, page)), as_json)
+
+
+@links_group.command("url")
+@click.argument("site")
+@click.argument("url")
+@click.option("--page", type=click.IntRange(min=0, max=32767), default=0)
+@json_option
+@guarded
+def links_url(site: str, url: str, page: int, as_json: bool) -> None:
+    emit(run_async(_read(links.url_links, site, url, page)), as_json)
+
+
+@links_group.command("connected")
+@click.argument("site")
+@json_option
+@guarded
+def links_connected(site: str, as_json: bool) -> None:
+    emit(run_async(_read(links.connected_pages, site)), as_json)
+
+
+@main.group("keywords")
+def keywords_group() -> None:
+    """Standalone Bing keyword research."""
+
+
+def keyword_options(function: Callable[..., Any]) -> Callable[..., Any]:
+    function = click.option("--language", required=True)(function)
+    return click.option("--country", required=True)(function)
+
+
+def date_options(function: Callable[..., Any]) -> Callable[..., Any]:
+    function = click.option("--end", required=True, callback=lambda _c, _p, value: _date(value))(
+        function
+    )
+    return click.option("--start", required=True, callback=lambda _c, _p, value: _date(value))(
+        function
+    )
+
+
+@keywords_group.command("get")
+@click.argument("keyword")
+@keyword_options
+@date_options
+@json_option
+@guarded
+def keywords_get(
+    keyword: str, country: str, language: str, start: date, end: date, as_json: bool
+) -> None:
+    emit(run_async(_read(keywords.keyword, keyword, country, language, start, end)), as_json)
+
+
+@keywords_group.command("stats")
+@click.argument("keyword")
+@keyword_options
+@json_option
+@guarded
+def keywords_stats(keyword: str, country: str, language: str, as_json: bool) -> None:
+    emit(run_async(_read(keywords.keyword_stats, keyword, country, language)), as_json)
+
+
+@keywords_group.command("related")
+@click.argument("keyword")
+@keyword_options
+@date_options
+@json_option
+@guarded
+def keywords_related(
+    keyword: str, country: str, language: str, start: date, end: date, as_json: bool
+) -> None:
+    emit(
+        run_async(_read(keywords.related_keywords, keyword, country, language, start, end)),
+        as_json,
+    )
+
+
+@main.group("sitemaps")
+def sitemaps_group() -> None:
+    """Submitted sitemaps and feeds."""
+
+
+@sitemaps_group.command("list")
+@click.argument("site")
+@json_option
+@guarded
+def sitemaps_list(site: str, as_json: bool) -> None:
+    emit(run_async(_read(sitemaps.feeds, site)), as_json)
+
+
+@sitemaps_group.command("details")
+@click.argument("site")
+@click.argument("feed_url")
+@json_option
+@guarded
+def sitemaps_details(site: str, feed_url: str, as_json: bool) -> None:
+    emit(run_async(_read(sitemaps.feed_details, site, feed_url)), as_json)
+
+
+@main.command("quota")
+@click.argument("site")
+@json_option
+@guarded
+def quota(site: str, as_json: bool) -> None:
+    emit(run_async(_read(submission.url_submission_quota, site)), as_json)
+
+
+@main.group("blocking")
+def blocking_group() -> None:
+    """Current URL, page-preview and deep-link blocks."""
+
+
+for _name, _function in {
+    "urls": blocking.blocked_urls,
+    "page-previews": blocking.page_preview_blocks,
+    "deep-links": blocking.deep_link_blocks,
+}.items():
+    _register_site_read(blocking_group, _name, _function)
+
+
+@main.command("query-parameters")
+@click.argument("site")
+@json_option
+@guarded
+def query_parameters(site: str, as_json: bool) -> None:
+    emit(run_async(_read(params.query_parameters, site)), as_json)
+
+
+@main.command("geo-settings")
+@click.argument("site")
+@json_option
+@guarded
+def geo_settings(site: str, as_json: bool) -> None:
+    emit(run_async(_read(geo.country_region_settings, site)), as_json)
+
+
+@main.command("content-quota")
+@click.argument("site")
+@json_option
+@guarded
+def content_quota(site: str, as_json: bool) -> None:
+    emit(run_async(_read(submission.content_submission_quota, site)), as_json)
+
+
+@main.group("indexnow")
+def indexnow_group() -> None:
+    """IndexNow key utilities. Submission itself still uses a plan."""
+
+
+@indexnow_group.command("key")
+@click.argument("host")
+@json_option
+@guarded
+def indexnow_key(host: str, as_json: bool) -> None:
+    key = indexnow.generate_key()
+    emit({"key": key, "key_location": indexnow.key_location(host, key)}, as_json)
+
+
+@main.group("plan")
+def plan_group() -> None:
+    """Record, inspect and explicitly apply writes."""
+
+
+@plan_group.command("create")
+@click.argument("operation", type=click.Choice(sorted(WRITE_OPS)))
+@click.option("--args-json", required=True, help="Operation arguments as a JSON object.")
+@json_option
+@guarded
+def plan_create(operation: str, args_json: str, as_json: bool) -> None:
+    try:
+        args = json.loads(args_json)
+    except json.JSONDecodeError as exc:
+        raise InvalidRequest(f"--args-json is not valid JSON: {exc}") from exc
+    if not isinstance(args, dict):
+        raise InvalidRequest("--args-json must contain an object")
+    emit(_plan_payload(run_async(_create_plan(operation, args))), as_json)
+
+
+@plan_group.command("submit-url")
+@click.argument("site")
+@click.argument("url")
+@json_option
+@guarded
+def plan_submit_url(site: str, url: str, as_json: bool) -> None:
+    plan = run_async(_create_plan("submit_url", {"site_url": site, "url": url}))
+    emit(_plan_payload(plan), as_json)
+
+
+def _read_lines(path: Path) -> list[str]:
+    values = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+    if not values:
+        raise InvalidRequest(f"{path} contains no URLs")
+    return values
+
+
+@plan_group.command("submit-urls")
+@click.argument("site")
+@click.option("--file", "path", required=True, type=click.Path(path_type=Path, exists=True))
+@json_option
+@guarded
+def plan_submit_urls(site: str, path: Path, as_json: bool) -> None:
+    plan = run_async(
+        _create_plan("submit_url_batch", {"site_url": site, "url_list": _read_lines(path)})
+    )
+    emit(_plan_payload(plan), as_json)
+
+
+@plan_group.command("submit-sitemap")
+@click.argument("site")
+@click.argument("feed_url")
+@json_option
+@guarded
+def plan_submit_sitemap(site: str, feed_url: str, as_json: bool) -> None:
+    plan = run_async(_create_plan("submit_feed", {"site_url": site, "feed_url": feed_url}))
+    emit(_plan_payload(plan), as_json)
+
+
+@plan_group.command("block-url")
+@click.argument("site")
+@click.argument("url")
+@click.option("--entity-type", required=True, type=int)
+@click.option("--request-type", required=True, type=int)
+@json_option
+@guarded
+def plan_block_url(site: str, url: str, entity_type: int, request_type: int, as_json: bool) -> None:
+    args = {
+        "site_url": site,
+        "blocked_url": {"Url": url, "EntityType": entity_type, "RequestType": request_type},
+    }
+    emit(_plan_payload(run_async(_create_plan("add_blocked_url", args))), as_json)
+
+
+@plan_group.command("indexnow")
+@click.argument("host")
+@click.option("--file", "path", required=True, type=click.Path(path_type=Path, exists=True))
+@click.option("--key", required=True)
+@click.option("--key-location")
+@json_option
+@guarded
+def plan_indexnow(host: str, path: Path, key: str, key_location: str | None, as_json: bool) -> None:
+    args = {"host": host, "key": key, "url_list": _read_lines(path)}
+    if key_location:
+        args["key_location"] = key_location
+    emit(_plan_payload(run_async(_create_plan("indexnow_submit", args))), as_json)
+
+
+@plan_group.command("list")
+@json_option
+@guarded
+def plan_list(as_json: bool) -> None:
+    settings = _load_settings(require_api_key=False)
+    plans = PlanStore(settings.state_dir, settings.plan_ttl_seconds).list()
+    emit([plan.model_dump(mode="json") for plan in plans], as_json)
+
+
+@plan_group.command("show")
+@click.argument("plan_id")
+@json_option
+@guarded
+def plan_show(plan_id: str, as_json: bool) -> None:
+    settings = _load_settings(require_api_key=False)
+    plan = PlanStore(settings.state_dir, settings.plan_ttl_seconds).get(plan_id)
+    emit(plan.model_dump(mode="json"), as_json)
+
+
+@plan_group.command("reject")
+@click.argument("plan_id")
+@json_option
+@guarded
+def plan_reject(plan_id: str, as_json: bool) -> None:
+    settings = _load_settings(require_api_key=False)
+    plan = PlanStore(settings.state_dir, settings.plan_ttl_seconds).reject(plan_id)
+    AuditLog(settings.state_dir).record("plan_rejected", plan_id=plan_id, operation=plan.operation)
+    emit({"plan_id": plan_id, "state": "rejected"}, as_json)
+
+
+@plan_group.command("apply")
+@click.argument("plan_id")
+@click.option("--yes", is_flag=True, help="Skip the human confirmation prompt.")
+@json_option
+@guarded
+def plan_apply(plan_id: str, yes: bool, as_json: bool) -> None:
+    settings = _load_settings(require_api_key=False)
+    store = PlanStore(settings.state_dir, settings.plan_ttl_seconds)
+    plan = store.ensure_pending(plan_id)
+    if not yes:
+        click.confirm(f"{plan.summary}\nApply this plan?", abort=True)
+
+    async def execute() -> dict[str, Any]:
+        limiter = RateLimiter(
+            settings.state_dir,
+            max_per_day=settings.max_writes_per_day,
+        )
+        if plan.operation == "indexnow_submit":
+            return await apply_plan(
+                plan_id,
+                store=store,
+                client=None,
+                audit=AuditLog(settings.state_dir),
+                limiter=limiter,
+            )
+        authenticated = _load_settings()
+        async with BingClient(authenticated, transport=_transport()) as client:
+            return await apply_plan(
+                plan_id,
+                store=store,
+                client=client,
+                audit=AuditLog(settings.state_dir),
+                limiter=limiter,
+            )
+
+    emit(run_async(execute()), as_json)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
