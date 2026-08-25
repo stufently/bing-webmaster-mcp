@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use bing-webmaster-mcp, please cite this software."
+title: "bing-webmaster-mcp"
+type: software
+authors:
+  - family-names: "T"
+    given-names: "Roman"
+version: 0.1.0
+date-released: 2026-08-25
+license: MIT
+repository-code: "https://github.com/stufently/bing-webmaster-mcp"
+url: "https://github.com/stufently/bing-webmaster-mcp"

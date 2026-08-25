@@ -442,16 +442,18 @@ Each step ends with tests passing and a commit.
 
 ---
 
-## 14. Open questions
+## 14. Resolved research questions
 
-Resolve during implementation; do not guess.
+Re-fetched from Microsoft Learn on 2026-08-25 and recorded in
+`docs/api-surface.md`:
 
-1. The 57-vs-62 method count (§4).
-2. Per-method GET vs POST. Only three are evidenced: `GetUserSites` GET, `AddSite`
-   POST, `SubmitUrlBatch` POST. Everything else is inference.
-3. Exact field shapes of the complex parameter types (§4).
-4. Whether the keyword methods need a verified site or work standalone.
-5. `SubmitUrlBatch`'s real per-call maximum (500 is secondary-sourced).
-6. `GetContentSubmissionQuota`'s return shape and defaults.
-7. Whether the Content Submission API is still in beta and still accepting new
-   users — check before exposing it.
+1. The interface has 62 methods: 59 supported plus three obsolete exclusions.
+2. Every page exposes `WebGet` or `WebInvoke(Method="POST")`; the exact verbs are
+   transcribed. `GetChildrenUrlInfo` is the unusual POST read.
+3. Exact complex-type property names are transcribed from their type pages.
+4. Keyword methods are standalone: their signatures contain no site parameter.
+5. Microsoft's `SubmitUrlBatch` remarks document a 500-URL per-call maximum.
+6. `GetContentSubmissionQuota` returns `DailyQuota` and `MonthlyQuota` as `Int64`.
+7. The current interface still exposes content submission without a beta label.
+   Per-account eligibility cannot be checked without an enrolled account, so Bing's
+   response remains authoritative.
