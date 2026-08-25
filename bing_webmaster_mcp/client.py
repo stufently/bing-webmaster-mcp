@@ -94,7 +94,24 @@ class BingClient:
                 error = UpstreamUnavailable(f"{method}: {exc}")
             else:
                 if response.status_code < 400:
-                    return _decode_success(method, response)
+                    if not mutating:
+                        return _decode_success(method, response)
+                    try:
+                        return _decode_success(method, response)
+                    except Exception as exc:
+                        # Bing accepted the write, so nothing that happens while reading
+                        # the answer may leave the plan retryable.
+                        raise PlanUnknownOutcome(
+                            f"{method}: Bing accepted the request but its response could "
+                            "not be read",
+                            suggestion="inspect Bing and the audit log before creating a new plan",
+                        ) from exc
+                if mutating and response.status_code >= 500:
+                    raise PlanUnknownOutcome(
+                        f"{method}: Bing answered HTTP {response.status_code}; "
+                        "the write may or may not have been applied",
+                        suggestion="inspect Bing and the audit log before creating a new plan",
+                    )
                 error = _map_error(method, response)
 
             if mutating or not error.retryable or attempt == self._settings.max_attempts:

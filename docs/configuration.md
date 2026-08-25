@@ -17,4 +17,13 @@ to plans or audit entries.
 | `BING_WM_HTTP_PORT` | `8765` | optional HTTP port |
 | `BING_WM_HTTP_BEARER_TOKEN` | unset | required for HTTP; at least 32 characters |
 
-Denylist matching is case-insensitive and ignores a trailing slash.
+Denylist matching is on the parsed host, so `http://`, an explicit `:443`, a trailing
+dot, and a change of case all match the same entry. Entries may be written as a URL or
+as a bare hostname. Matching is exact per host: a denied `example.com` does not cover
+`www.example.com`, which Bing treats as a separate site. An entry without a path denies
+every path on that host; an entry with a path denies that path and everything under it.
+The denylist is re-checked when a plan is applied, not only when it is created.
+
+A variable that holds a list must be JSON, for example
+`BING_WM_DENIED_SITES='["https://locked.example"]'`. A bare value is reported as an
+`INVALID_REQUEST` naming the field rather than as a traceback.

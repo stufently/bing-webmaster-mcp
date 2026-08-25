@@ -7,6 +7,7 @@ hardcodes a quota; submission quotas always come from Bing itself.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -31,16 +32,16 @@ class RateLimiter:
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS usage "
                 "(day TEXT NOT NULL, key TEXT NOT NULL, count INTEGER NOT NULL, "
                 "PRIMARY KEY (day, key))"
             )
 
-    def _used(self, connection: sqlite3.Connection, key: str) -> int:
+    def _used(self, connection: sqlite3.Connection, key: str, day: str | None = None) -> int:
         row = connection.execute(
-            "SELECT count FROM usage WHERE day = ? AND key = ?", (_today(), key)
+            "SELECT count FROM usage WHERE day = ? AND key = ?", (day or _today(), key)
         ).fetchone()
         return int(row[0]) if row else 0
 
@@ -49,7 +50,7 @@ class RateLimiter:
             raise ValueError("cost must be non-negative")
         if self._max is None:
             return
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             used = self._used(connection, key)
         if used + cost > self._max:
             raise QuotaExceeded(
@@ -58,19 +59,41 @@ class RateLimiter:
                 details={"used": used, "requested": cost, "local_max": self._max},
             )
 
-    def consume(self, key: str, cost: int = 1) -> None:
+    def release(self, key: str, cost: int = 1, *, day: str | None = None) -> None:
+        """Give back a reservation for a request that never reached the network.
+
+        ``day`` is the value ``consume`` returned. Recomputing it here would credit the
+        new day for a reservation taken before a UTC midnight, raising that day's ceiling.
+        """
         if cost < 0:
             raise ValueError("cost must be non-negative")
-        with self._connect() as connection:
+        day = day or _today()
+        with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            used = self._used(connection, key)
+            used = self._used(connection, key, day)
+            connection.execute(
+                "INSERT INTO usage(day, key, count) VALUES (?, ?, ?) "
+                "ON CONFLICT(day, key) DO UPDATE SET count = excluded.count",
+                (day, key, max(0, used - cost)),
+            )
+
+    def consume(self, key: str, cost: int = 1) -> str:
+        """Count ``cost`` against today and return the day it was counted on."""
+        if cost < 0:
+            raise ValueError("cost must be non-negative")
+        day = _today()
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            used = self._used(connection, key, day)
             if self._max is not None and used + cost > self._max:
                 raise QuotaExceeded(
                     f"local daily write limit reached for {key}: {used}/{self._max}",
+                    suggestion="change BING_WM_MAX_WRITES_PER_DAY or wait for the UTC day rollover",
                     details={"used": used, "requested": cost, "local_max": self._max},
                 )
             connection.execute(
                 "INSERT INTO usage(day, key, count) VALUES (?, ?, ?) "
                 "ON CONFLICT(day, key) DO UPDATE SET count = excluded.count",
-                (_today(), key, used + cost),
+                (day, key, used + cost),
             )
+        return day

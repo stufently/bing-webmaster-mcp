@@ -77,3 +77,83 @@ def test_all_required_command_groups_exist() -> None:
         "indexnow",
     ):
         assert group in result.output
+
+
+def test_apply_prompt_shows_the_prepared_request_body(tmp_path, monkeypatch) -> None:
+    settings = fake_settings(tmp_path)
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(cli, "_transport", lambda: bing_transport({}))
+    plan = cli.run_async(
+        cli._create_plan(
+            "save_crawl_settings",
+            {
+                "site_url": "https://a.example",
+                "crawl_settings": {"CrawlBoostEnabled": False, "CrawlRate": [7] * 24},
+            },
+        )
+    )
+    result = CliRunner().invoke(cli.main, ["plan", "apply", plan.plan_id], input="n\n")
+    assert result.exit_code == 1
+    assert "SaveCrawlSettings request body" in result.output
+    assert "CrawlBoostEnabled" in result.output
+    assert "crawlSettings" in result.output
+
+
+def test_apply_prompt_shows_every_url_in_a_batch(tmp_path, monkeypatch) -> None:
+    settings = fake_settings(tmp_path)
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(
+        cli, "_transport", lambda: bing_transport({"GetUrlSubmissionQuota": {"DailyQuota": 500}})
+    )
+    urls = [f"https://a.example/{index}" for index in range(60)]
+    plan = cli.run_async(
+        cli._create_plan("submit_url_batch", {"site_url": "https://a.example", "url_list": urls})
+    )
+    result = CliRunner().invoke(cli.main, ["plan", "apply", plan.plan_id], input="n\n")
+    assert result.exit_code == 1
+    for url in urls:
+        assert url in result.output
+
+
+def test_apply_prompt_states_the_size_of_an_elided_value(tmp_path, monkeypatch) -> None:
+    import base64
+
+    settings = fake_settings(tmp_path)
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(
+        cli,
+        "_transport",
+        lambda: bing_transport({"GetContentSubmissionQuota": {"DailyQuota": 10}}),
+    )
+    encoded = base64.b64encode(b"HTTP/1.1 200 OK\r\n\r\n" + b"x" * 5000).decode()
+    plan = cli.run_async(
+        cli._create_plan(
+            "submit_content",
+            {
+                "site_url": "https://a.example",
+                "url": "https://a.example/p",
+                "http_message": encoded,
+                "structured_data": "",
+                "dynamic_serving": 0,
+            },
+        )
+    )
+    result = CliRunner().invoke(cli.main, ["plan", "apply", plan.plan_id], input="n\n")
+    assert result.exit_code == 1
+    assert f"({len(encoded)} characters)" in result.output
+
+
+def test_apply_prompt_strips_bidi_characters_from_the_payload(tmp_path, monkeypatch) -> None:
+    settings = fake_settings(tmp_path)
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(cli, "_transport", lambda: bing_transport({}))
+    plan = cli.run_async(
+        cli._create_plan(
+            "add_query_parameter",
+            {"site_url": "https://a.example", "query_parameter": "utm‮source"},
+        )
+    )
+    result = CliRunner().invoke(cli.main, ["plan", "apply", plan.plan_id], input="n\n")
+    assert result.exit_code == 1
+    assert "‮" not in result.output
+    assert "utmsource" in result.output

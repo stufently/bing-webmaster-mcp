@@ -112,3 +112,17 @@ async def test_safe_read_retries_rate_limit(tmp_path, monkeypatch: pytest.Monkey
     ) as client:
         assert await client.call("GetUserSites") == []
     assert attempts == 2
+
+
+async def test_server_error_on_a_write_is_an_unknown_outcome(tmp_path) -> None:
+    transport = error_transport(503, {"Message": "upstream"})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        with pytest.raises(PlanUnknownOutcome):
+            await client.call("AddSite", body={"siteUrl": "https://a.example"}, mutating=True)
+
+
+async def test_server_error_on_a_read_stays_retryable(tmp_path) -> None:
+    transport = error_transport(503, {"Message": "upstream"})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        with pytest.raises(UpstreamUnavailable):
+            await client.call("GetUserSites")

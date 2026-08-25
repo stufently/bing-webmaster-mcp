@@ -150,3 +150,80 @@ def test_complex_types_reject_invented_fields() -> None:
     args["crawl_settings"]["AjaxEnabled"] = True
     with pytest.raises(InvalidRequest, match="AjaxEnabled"):
         prepare_write("save_crawl_settings", args)
+
+
+def test_country_region_url_must_belong_to_the_site() -> None:
+    args = {
+        "site_url": SITE,
+        "settings": {"TwoLetterIsoCountryCode": "TH", "Type": 0, "Url": "https://evil.example/x"},
+    }
+    with pytest.raises(InvalidRequest):
+        prepare_write("add_country_region_settings", args)
+
+
+def test_site_move_source_must_belong_to_the_site() -> None:
+    args = {
+        "site_url": SITE,
+        "settings": {
+            "MoveScope": 0,
+            "MoveType": 0,
+            "SourceUrl": "https://evil.example",
+            "TargetUrl": "https://b.example",
+        },
+    }
+    with pytest.raises(InvalidRequest):
+        prepare_write("submit_site_move", args)
+
+
+def test_site_move_target_may_be_another_site_but_must_be_a_url() -> None:
+    args = sample_args("submit_site_move")
+    prepared = prepare_write("submit_site_move", args)
+    assert prepared.body["settings"]["TargetUrl"] == "https://b.example"
+    args["settings"] = {**args["settings"], "TargetUrl": "not-a-url"}
+    with pytest.raises(InvalidRequest):
+        prepare_write("submit_site_move", args)
+
+
+@pytest.mark.parametrize("url", ["ftp://a.example/secret", "//a.example/secret", "a.example/x"])
+def test_urls_inside_complex_objects_must_be_absolute_http(url: str) -> None:
+    args = {
+        "site_url": SITE,
+        "blocked_url": {"Url": url, "EntityType": 0, "RequestType": 1},
+    }
+    with pytest.raises(InvalidRequest):
+        prepare_write("add_blocked_url", args)
+
+
+def test_delegated_url_must_be_an_absolute_url() -> None:
+    args = {**sample_args("add_site_roles"), "site_url": SITE, "delegated_url": "a.example"}
+    with pytest.raises(InvalidRequest):
+        prepare_write("add_site_roles", args)
+
+
+def test_url_with_an_unparsable_port_inside_a_complex_object_is_rejected() -> None:
+    args = {
+        "site_url": SITE,
+        "settings": {
+            "MoveScope": 0,
+            "MoveType": 0,
+            "SourceUrl": SITE,
+            "TargetUrl": "https://b.example:notaport",
+        },
+    }
+    with pytest.raises(InvalidRequest):
+        prepare_write("submit_site_move", args)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://a.example/p", "https://a.example:8443/p"],
+)
+def test_a_url_on_a_different_origin_does_not_belong_to_the_site(url: str) -> None:
+    with pytest.raises(InvalidRequest):
+        prepare_write("submit_url", {"site_url": SITE, "url": url})
+
+
+def test_a_site_on_an_explicit_port_keeps_its_own_urls() -> None:
+    site = "https://a.example:8443"
+    prepared = prepare_write("submit_url", {"site_url": site, "url": f"{site}/p"})
+    assert prepared.body["url"] == f"{site}/p"

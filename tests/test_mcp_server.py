@@ -53,3 +53,27 @@ async def test_error_results_keep_public_error_contract() -> None:
     result = await mcp_server.call_tool("bing_url_info", {})
     assert result.is_error is True
     assert result.structured_content["code"] == "INVALID_REQUEST"
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        ("bing_link_counts", {"site_url": "https://a.example", "page": "one"}),
+        ("bing_site_roles", {"site_url": "https://a.example", "include_all_subdomains": "yes"}),
+        ("bing_children_url_info", {"site_url": "https://a.example", "url": ["https://a.example"]}),
+        ("bing_plan_submit_url_batch", {"site_url": "https://a.example", "url_list": [1, 2]}),
+        ("bing_plan_save_crawl_settings", {"site_url": "https://a.example", "crawl_settings": "x"}),
+    ],
+)
+async def test_argument_types_are_enforced_by_the_server(name: str, arguments: dict) -> None:
+    result = await mcp_server.call_tool(name, arguments)
+    assert result.is_error
+    assert "INVALID_REQUEST" in result.content[0].text
+
+
+async def test_a_boolean_is_not_accepted_where_an_integer_is_declared() -> None:
+    result = await mcp_server.call_tool(
+        "bing_plan_add_page_preview_block",
+        {"site_url": "https://a.example", "url": "https://a.example/p", "reason": True},
+    )
+    assert result.is_error

@@ -35,6 +35,27 @@ def test_site_normalisation(raw: str, expected: str) -> None:
     assert normalise_site(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "ftp://example.com",
+        "FTP://example.com",
+        "mailto:a@b.example",
+        "[abc",
+        "https://example.com?a=1",
+    ],
+)
+def test_unusable_site_urls_are_rejected(raw: str) -> None:
+    from bing_webmaster_mcp.errors import InvalidRequest
+
+    with pytest.raises(InvalidRequest):
+        normalise_site(raw)
+
+
+def test_uppercase_scheme_is_normalised_not_prefixed() -> None:
+    assert normalise_site("HTTPS://Example.com") == "https://example.com"
+
+
 SITE_READS = [
     (sites.site_roles, "GetSiteRoles", ()),
     (sites.site_moves, "GetSiteMoves", ()),
@@ -142,3 +163,15 @@ async def test_read_results_are_sanitized(tmp_path) -> None:
         rows: list[dict[str, Any]] = await crawl.crawl_issues(client, "a.example")
     assert rows[0]["Url"] == {"value": "xevil", "untrusted": True}
     assert rows[0]["Message"] == {"value": "m", "untrusted": True}
+
+
+def test_site_url_with_an_unparsable_port_is_rejected() -> None:
+    from bing_webmaster_mcp.errors import InvalidRequest
+
+    with pytest.raises(InvalidRequest):
+        normalise_site("https://example.com:notaport")
+
+
+def test_ipv6_site_keeps_its_brackets() -> None:
+    assert normalise_site("https://[2001:db8::1]/") == "https://[2001:db8::1]"
+    assert normalise_site("https://[2001:db8::1]:8443/p") == "https://[2001:db8::1]:8443/p"

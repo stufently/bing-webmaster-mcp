@@ -16,10 +16,13 @@ from ..errors import (
     RateLimited,
     UpstreamUnavailable,
 )
+from ._common import split_url
 
 ENDPOINT = "https://api.indexnow.org/indexnow"
 MAX_BATCH = 10_000
 _KEY = re.compile(r"^[A-Za-z0-9-]{8,128}$")
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_HOST = re.compile(rf"^(?=.{{1,253}}$){_LABEL}(?:\.{_LABEL})*$")
 _MEANING = {
     200: "received",
     202: "accepted; not yet processed (normal on first use of a key)",
@@ -40,13 +43,12 @@ def validate_key(key: str) -> None:
 
 def validate_host(host: str) -> str:
     candidate = host.strip().casefold()
+    # Checked before urlsplit, which raises a bare ValueError on an unbalanced bracket
+    # and happily accepts hostnames containing spaces.
+    if _HOST.fullmatch(candidate) is None:
+        raise InvalidRequest("IndexNow host must be a hostname without a scheme, path, or port")
     parsed = urlsplit(f"//{candidate}")
-    if (
-        not candidate
-        or parsed.hostname != candidate
-        or parsed.username is not None
-        or parsed.port is not None
-    ):
+    if parsed.hostname != candidate or parsed.username is not None or parsed.port is not None:
         raise InvalidRequest("IndexNow host must be a hostname without a scheme, path, or port")
     return candidate
 
@@ -59,7 +61,7 @@ def key_location(host: str, key: str) -> str:
 def validate_key_location(host: str, key: str, location: str | None) -> str:
     if location is None:
         return key_location(host, key)
-    parsed = urlsplit(location)
+    parsed = split_url(location, "keyLocation")
     if parsed.scheme != "https" or parsed.hostname != validate_host(host) or parsed.username:
         raise InvalidRequest("keyLocation must be an HTTPS URL on the submitted host")
     return location
@@ -81,7 +83,7 @@ def validate_urls(
 
     key_path = urlsplit(normalized_location).path.rsplit("/", 1)[0]
     for url in urls:
-        parsed = urlsplit(url)
+        parsed = split_url(url, "urlList")
         if parsed.scheme not in {"http", "https"} or parsed.hostname != normalized_host:
             raise InvalidRequest(f"URL {url!r} does not belong to IndexNow host {normalized_host}")
         if key_path and parsed.path != key_path and not parsed.path.startswith(f"{key_path}/"):

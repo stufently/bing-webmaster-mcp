@@ -118,43 +118,63 @@ class PlanStore:
             )
         return plan
 
-    def mark_applied(self, plan_id: str) -> Plan:
-        plan = self.ensure_pending(plan_id)
-        updated = plan.model_copy(update={"applied_at": datetime.now(UTC)})
+    def _record_outcome(self, plan_id: str, field: str) -> Plan:
+        """Write a terminal state.
+
+        Deliberately not routed through ``ensure_pending``: expiry is checked before a
+        mutation is sent, never after. A plan whose TTL elapses while its request is in
+        flight must still record what happened to it, or the operator is told "expired"
+        about a write that already reached Bing.
+        """
+        plan = self.get(plan_id)
+        if plan.applied_at or plan.rejected_at or plan.unknown_outcome_at:
+            raise PlanAlreadyApplied(f"plan {plan_id} is already {plan.state}")
+        updated = plan.model_copy(update={field: datetime.now(UTC)})
         self._write(updated)
         return updated
+
+    def mark_applied(self, plan_id: str) -> Plan:
+        return self._record_outcome(plan_id, "applied_at")
 
     def mark_unknown(self, plan_id: str) -> Plan:
-        plan = self.ensure_pending(plan_id)
-        updated = plan.model_copy(update={"unknown_outcome_at": datetime.now(UTC)})
-        self._write(updated)
-        return updated
+        return self._record_outcome(plan_id, "unknown_outcome_at")
 
     def reject(self, plan_id: str) -> Plan:
-        plan = self.ensure_pending(plan_id)
-        updated = plan.model_copy(update={"rejected_at": datetime.now(UTC)})
-        self._write(updated)
-        return updated
+        """Refuse a plan.
+
+        Unlike the two apply outcomes this is a fresh decision, not the record of a
+        request already sent, so it keeps the expiry check. It takes the same exclusive
+        lock for the whole transition: testing for the lock and then writing would let
+        an apply start in between and lose its own outcome.
+        """
+        with self._locked(plan_id, "wait for it to finish"):
+            self.ensure_pending(plan_id)
+            return self._record_outcome(plan_id, "rejected_at")
 
     def set_expiry(self, plan_id: str, when: datetime) -> None:
         self._write(self.get(plan_id).model_copy(update={"expires_at": when}))
 
     @contextmanager
-    def applying(self, plan_id: str) -> Iterator[Plan]:
+    def _locked(self, plan_id: str, advice: str) -> Iterator[None]:
         path = self._path(plan_id).with_suffix(".lock")
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError as exc:
             raise PlanAlreadyApplied(
-                f"plan {plan_id} is locked by an apply attempt; its outcome may be unknown"
+                f"plan {plan_id} is locked by an apply attempt; {advice}"
             ) from exc
         try:
             os.write(descriptor, f"pid={os.getpid()}\n".encode())
             os.close(descriptor)
-            yield self.ensure_pending(plan_id)
+            yield
         finally:
             if path.exists():
                 path.unlink()
+
+    @contextmanager
+    def applying(self, plan_id: str) -> Iterator[Plan]:
+        with self._locked(plan_id, "its outcome may be unknown"):
+            yield self.ensure_pending(plan_id)
 
 
 async def create_write_plan(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -10,7 +11,14 @@ from test_writes import sample_args
 from bing_webmaster_mcp.apply import apply_plan
 from bing_webmaster_mcp.audit import AuditLog
 from bing_webmaster_mcp.client import BingClient
-from bing_webmaster_mcp.errors import PlanAlreadyApplied, PlanExpired, PlanUnknownOutcome
+from bing_webmaster_mcp.errors import (
+    InvalidRequest,
+    PlanAlreadyApplied,
+    PlanExpired,
+    PlanUnknownOutcome,
+    PolicyDenied,
+    QuotaExceeded,
+)
 from bing_webmaster_mcp.limits import RateLimiter
 from bing_webmaster_mcp.plans import PlanStore, create_write_plan
 from bing_webmaster_mcp.writes import WRITE_OPS
@@ -52,6 +60,7 @@ async def test_apply_is_one_shot_and_audited(tmp_path) -> None:
     async with BingClient(settings, transport=transport) as client:
         result = await apply_plan(
             plan.plan_id,
+            settings=settings,
             store=store,
             client=client,
             audit=AuditLog(tmp_path),
@@ -60,6 +69,7 @@ async def test_apply_is_one_shot_and_audited(tmp_path) -> None:
         with pytest.raises(PlanAlreadyApplied):
             await apply_plan(
                 plan.plan_id,
+                settings=settings,
                 store=store,
                 client=client,
                 audit=AuditLog(tmp_path),
@@ -83,6 +93,7 @@ async def test_expired_plan_never_reaches_upstream(tmp_path) -> None:
         with pytest.raises(PlanExpired):
             await apply_plan(
                 plan.plan_id,
+                settings=settings,
                 store=store,
                 client=client,
                 audit=AuditLog(tmp_path),
@@ -103,6 +114,7 @@ async def test_lost_write_response_marks_unknown_and_blocks_retry(tmp_path) -> N
         with pytest.raises(PlanUnknownOutcome):
             await apply_plan(
                 plan.plan_id,
+                settings=settings,
                 store=store,
                 client=client,
                 audit=AuditLog(tmp_path),
@@ -128,6 +140,7 @@ async def test_indexnow_plan_verifies_key_then_submits(tmp_path) -> None:
 
     result = await apply_plan(
         plan.plan_id,
+        settings=fake_settings(tmp_path),
         store=store,
         client=None,
         audit=AuditLog(tmp_path),
@@ -149,9 +162,212 @@ async def test_every_write_applies_as_post(tmp_path, name: str) -> None:
     async with BingClient(settings, transport=transport) as client:
         await apply_plan(
             plan.plan_id,
+            settings=settings,
             store=store,
             client=client,
             audit=AuditLog(tmp_path),
             limiter=RateLimiter(tmp_path, max_per_day=None),
         )
     assert transport.calls[0].method == "POST"
+
+
+async def test_server_error_on_a_write_marks_the_plan_unknown(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(500, json={"Message": "boom"}, request=request)
+    )
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(PlanUnknownOutcome):
+            await apply_plan(
+                plan.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=RateLimiter(tmp_path, max_per_day=None),
+            )
+    assert store.get(plan.plan_id).state == "unknown_outcome"
+
+
+async def test_write_that_lands_after_the_ttl_still_records_its_outcome(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        store.set_expiry(plan.plan_id, datetime.now(UTC) - timedelta(seconds=1))
+        return httpx.Response(200, json={"d": None}, request=request)
+
+    async with BingClient(settings, transport=httpx.MockTransport(handler)) as client:
+        result = await apply_plan(
+            plan.plan_id,
+            settings=settings,
+            store=store,
+            client=client,
+            audit=AuditLog(tmp_path),
+            limiter=RateLimiter(tmp_path, max_per_day=None),
+        )
+    assert result["applied"] is True
+    assert store.get(plan.plan_id).state == "applied"
+    assert [entry["event"] for entry in AuditLog(tmp_path).entries()][-1] == "plan_apply_succeeded"
+
+
+async def test_denylist_added_after_planning_blocks_the_apply(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+    denied = fake_settings(tmp_path, denied_sites=("a.example",))
+    transport = bing_transport({"AddSite": None})
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(PolicyDenied):
+            await apply_plan(
+                plan.plan_id,
+                settings=denied,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=RateLimiter(tmp_path, max_per_day=None),
+            )
+    assert transport.calls == []
+    assert store.get(plan.plan_id).state == "pending"
+    assert [entry["event"] for entry in AuditLog(tmp_path).entries()] == ["plan_apply_denied"]
+
+
+async def test_undecodable_response_to_a_write_is_an_unknown_outcome(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, text="<html>gateway</html>", request=request)
+    )
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(PlanUnknownOutcome):
+            await apply_plan(
+                plan.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=RateLimiter(tmp_path, max_per_day=None),
+            )
+    assert store.get(plan.plan_id).state == "unknown_outcome"
+
+
+async def test_local_ceiling_is_reserved_before_the_write(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    limiter = RateLimiter(tmp_path, max_per_day=1)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+    transport = bing_transport({"AddSite": None})
+    async with BingClient(settings, transport=transport) as client:
+        await apply_plan(
+            plan.plan_id,
+            settings=settings,
+            store=store,
+            client=client,
+            audit=AuditLog(tmp_path),
+            limiter=limiter,
+        )
+        second = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+        with pytest.raises(QuotaExceeded):
+            await apply_plan(
+                second.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=limiter,
+            )
+    assert len(transport.calls) == 1
+
+
+async def test_a_refused_write_gives_its_reservation_back(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    limiter = RateLimiter(tmp_path, max_per_day=1)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(400, json={"Message": "no"}, request=request)
+    )
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(InvalidRequest):
+            await apply_plan(
+                plan.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=limiter,
+            )
+    limiter.check("https://a.example", 1)
+
+
+async def test_out_of_range_date_in_a_write_response_is_an_unknown_outcome(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json={"d": {"When": "/Date(99999999999999999)/"}}, request=request
+        )
+    )
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(PlanUnknownOutcome):
+            await apply_plan(
+                plan.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=RateLimiter(tmp_path, max_per_day=None),
+            )
+    assert store.get(plan.plan_id).state == "unknown_outcome"
+
+
+async def test_reject_cannot_run_while_an_apply_holds_the_lock(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+    rejected_during_apply = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with pytest.raises(PlanAlreadyApplied):
+            store.reject(plan.plan_id)
+        rejected_during_apply.append(True)
+        return httpx.Response(200, json={"d": None}, request=request)
+
+    async with BingClient(settings, transport=httpx.MockTransport(handler)) as client:
+        await apply_plan(
+            plan.plan_id,
+            settings=settings,
+            store=store,
+            client=client,
+            audit=AuditLog(tmp_path),
+            limiter=RateLimiter(tmp_path, max_per_day=None),
+        )
+    assert rejected_during_apply == [True]
+    assert store.get(plan.plan_id).state == "applied"
+
+
+async def test_cancelled_write_is_recorded_as_unknown(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    store = PlanStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise asyncio.CancelledError
+
+    async with BingClient(settings, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(asyncio.CancelledError):
+            await apply_plan(
+                plan.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=RateLimiter(tmp_path, max_per_day=None),
+            )
+    assert store.get(plan.plan_id).state == "unknown_outcome"
+    assert not list((tmp_path / "plans").glob("*.lock"))

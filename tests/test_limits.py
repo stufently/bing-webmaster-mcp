@@ -25,3 +25,29 @@ def test_counters_roll_over_on_new_utc_day(tmp_path, monkeypatch: pytest.MonkeyP
     RateLimiter(tmp_path, max_per_day=1).consume("site")
     monkeypatch.setattr("bing_webmaster_mcp.limits._today", lambda: "2026-08-26")
     RateLimiter(tmp_path, max_per_day=1).check("site")
+
+
+def test_release_credits_the_day_the_reservation_was_taken_on(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("bing_webmaster_mcp.limits._today", lambda: "2026-08-25")
+    limiter = RateLimiter(tmp_path, max_per_day=1)
+    day = limiter.consume("site")
+
+    monkeypatch.setattr("bing_webmaster_mcp.limits._today", lambda: "2026-08-26")
+    limiter.release("site", day=day)
+    # The new day must still have its whole ceiling: the release belonged to the old one.
+    limiter.consume("site")
+    with pytest.raises(QuotaExceeded):
+        limiter.consume("site")
+
+    monkeypatch.setattr("bing_webmaster_mcp.limits._today", lambda: "2026-08-25")
+    limiter.check("site", 1)
+
+
+def test_release_never_drops_below_zero(tmp_path) -> None:
+    limiter = RateLimiter(tmp_path, max_per_day=2)
+    limiter.release("site", 5)
+    limiter.consume("site", 2)
+    with pytest.raises(QuotaExceeded):
+        limiter.consume("site", 1)

@@ -32,7 +32,8 @@ from .ops import (
     traffic,
 )
 from .plans import Plan, PlanStore, create_write_plan
-from .writes import WRITE_OPS
+from .render import sanitize_text
+from .writes import WRITE_OPS, prepare_write
 
 
 def _load_settings(*, require_api_key: bool = True) -> Settings:
@@ -139,6 +140,39 @@ def _plan_payload(plan: Plan) -> dict[str, Any]:
         "expires_at": plan.expires_at,
         "apply_with": f"bing-wm plan apply {plan.plan_id}",
     }
+
+
+_REVIEW_STRING_LIMIT = 200
+
+
+def _review(plan: Plan) -> str:
+    """Render what the plan actually sends.
+
+    This prompt is the security boundary for an agent-authored change, so it must show
+    the prepared request, not only the one-line summary: for the complex-object writes
+    the summary names the site and nothing about the payload.
+    """
+    prepared = prepare_write(plan.operation, plan.args)
+    body = json.dumps(_abbreviate(prepared.body), indent=2, ensure_ascii=False, sort_keys=True)
+    return f"{plan.summary}\n\n{prepared.method} request body:\n{body}"
+
+
+def _abbreviate(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _abbreviate(item) for key, item in value.items()}
+    if isinstance(value, list):
+        # Every element is shown: a batch the operator cannot see is a batch they cannot
+        # approve, and the summary above already states how many there are.
+        return [_abbreviate(item) for item in value]
+    if isinstance(value, str):
+        # Bidi and other format characters would let a payload lie about itself in the
+        # terminal, and this prompt is what the operator approves. Only the shown head is
+        # sanitized: a payload can be megabytes, and the stated length is the real one.
+        if len(value) > _REVIEW_STRING_LIMIT:
+            head = sanitize_text(value[:_REVIEW_STRING_LIMIT])
+            return f"{head}... ({len(value)} characters)"
+        return sanitize_text(value)
+    return value
 
 
 def _date(value: str) -> date:
@@ -642,7 +676,7 @@ def plan_apply(plan_id: str, yes: bool, as_json: bool) -> None:
     store = PlanStore(settings.state_dir, settings.plan_ttl_seconds)
     plan = store.ensure_pending(plan_id)
     if not yes:
-        click.confirm(f"{plan.summary}\nApply this plan?", abort=True)
+        click.confirm(f"{_review(plan)}\nApply this plan?", abort=True)
 
     async def execute() -> dict[str, Any]:
         limiter = RateLimiter(
@@ -652,6 +686,7 @@ def plan_apply(plan_id: str, yes: bool, as_json: bool) -> None:
         if plan.operation == "indexnow_submit":
             return await apply_plan(
                 plan_id,
+                settings=settings,
                 store=store,
                 client=None,
                 audit=AuditLog(settings.state_dir),
@@ -661,6 +696,7 @@ def plan_apply(plan_id: str, yes: bool, as_json: bool) -> None:
         async with BingClient(authenticated, transport=_transport()) as client:
             return await apply_plan(
                 plan_id,
+                settings=settings,
                 store=store,
                 client=client,
                 audit=AuditLog(settings.state_dir),

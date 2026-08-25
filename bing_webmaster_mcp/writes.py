@@ -6,10 +6,11 @@ import base64
 import binascii
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult
 
 from .errors import InvalidRequest
 from .ops._common import normalise_site
+from .ops._common import split_url as _split
 from .render import sanitize_text
 
 MAX_BING_URL_BATCH = 500
@@ -129,7 +130,7 @@ def _prepare(operation: WriteOp, args: dict[str, Any]) -> PreparedWrite:
     elif name == "add_site_roles":
         body.update(
             {
-                "delegatedUrl": _string(args, "delegated_url"),
+                "delegatedUrl": _absolute_url(args, "delegated_url"),
                 "userEmail": _string(args, "user_email"),
                 "authenticationCode": _string(args, "authentication_code"),
                 "isAdministrator": _boolean(args, "is_administrator"),
@@ -141,7 +142,14 @@ def _prepare(operation: WriteOp, args: dict[str, Any]) -> PreparedWrite:
         body["siteRole"] = _complex(args, "site_role", "SiteRoles")
         summary = f"remove a delegated site role from {site}"
     elif name == "submit_site_move":
-        body["settings"] = _complex(args, "settings", "SiteMoveSettings")
+        move = _complex(args, "settings", "SiteMoveSettings")
+        if "SourceUrl" in move:
+            _ensure_site_url(str(move["SourceUrl"]), site)
+        if "TargetUrl" in move:
+            # A move points somewhere else by definition, so the target is only required
+            # to be a real absolute URL, not to belong to the registered site.
+            _ensure_absolute(str(move["TargetUrl"]), "TargetUrl")
+        body["settings"] = move
         summary = f"submit a site move for {site}"
     elif name == "save_crawl_settings":
         body["crawlSettings"] = _complex(args, "crawl_settings", "CrawlSettings")
@@ -168,7 +176,10 @@ def _prepare(operation: WriteOp, args: dict[str, Any]) -> PreparedWrite:
         )
         summary = f"set query parameter {body['queryParameter']} enabled={body['isEnabled']}"
     elif name in {"add_country_region_settings", "remove_country_region_settings"}:
-        body["settings"] = _complex(args, "settings", "CountryRegionSettings")
+        region = _complex(args, "settings", "CountryRegionSettings")
+        if "Url" in region:
+            _ensure_site_url(str(region["Url"]), site)
+        body["settings"] = region
         summary = f"{name.replace('_', ' ')} on {site}"
     elif name == "add_page_preview_block":
         body.update({"url": _site_url(args, "url", site), "reason": _integer(args, "reason")})
@@ -249,12 +260,15 @@ def _integer(args: dict[str, Any], name: str) -> int:
     return value
 
 
-def _absolute_url(args: dict[str, Any], name: str) -> str:
-    value = _string(args, name)
-    parsed = urlsplit(value)
+def _ensure_absolute(value: str, name: str) -> str:
+    parsed = _split(value, name)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
         raise InvalidRequest(f"{name} must be an absolute HTTP(S) URL")
     return value
+
+
+def _absolute_url(args: dict[str, Any], name: str) -> str:
+    return _ensure_absolute(_string(args, name), name)
 
 
 def _site_url(args: dict[str, Any], name: str, site: str) -> str:
@@ -263,10 +277,22 @@ def _site_url(args: dict[str, Any], name: str, site: str) -> str:
     return value
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(parsed: SplitResult) -> tuple[str, str | None, int | None]:
+    port = parsed.port if parsed.port is not None else _DEFAULT_PORTS.get(parsed.scheme)
+    return parsed.scheme, parsed.hostname, port
+
+
 def _ensure_site_url(value: str, site: str) -> None:
-    candidate = urlsplit(value)
-    owner = urlsplit(site)
-    if candidate.hostname != owner.hostname:
+    # Called directly with values lifted out of complex objects, so the scheme is checked
+    # here too: matching only the hostname would let "ftp://a.example/p" through, and a
+    # site on one port accept URLs on another.
+    _ensure_absolute(value, "url")
+    candidate = _split(value, "url")
+    owner = _split(site, "site_url")
+    if _origin(candidate) != _origin(owner):
         raise InvalidRequest(f"URL {value!r} does not belong to site {site!r}")
     owner_path = owner.path.rstrip("/")
     if (

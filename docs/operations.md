@@ -90,7 +90,16 @@ by default and move to terminal `applied`, `rejected`, or `unknown_outcome` stat
 Applying acquires an exclusive lock before the request. A process crash after a request
 therefore leaves a lock instead of allowing an accidental duplicate.
 
-`audit.jsonl` records creation, attempts, failures, unknown outcomes, and successes
-without storing the API key or content bodies. `limits.sqlite3` stores configured local
-counters transactionally. For an unknown outcome, inspect Bing and the audit log; do not
-create a replacement blindly.
+`bing-wm plan apply` prints the prepared request body before asking for confirmation,
+because for the complex-object writes the one-line summary names only the site. A write
+whose outcome cannot be known — a lost response, an HTTP 5xx from Bing, or a 2xx whose
+body cannot be read — becomes `unknown_outcome` and is never retried automatically. A
+plan whose TTL elapses while its request is in flight still records what happened to it.
+An IndexNow 5xx is the exception and stays a plain retryable failure: resubmitting the
+same URLs is a protocol-level no-op.
+
+`audit.jsonl` records creation, attempts, failures, denials, unknown outcomes, and
+successes without storing the API key or content bodies. `limits.sqlite3` stores
+configured local counters transactionally; a plan reserves its cost before the request
+and the reservation is released only if the request never reached Bing. For an unknown
+outcome, inspect Bing and the audit log; do not create a replacement blindly.

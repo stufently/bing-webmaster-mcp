@@ -317,14 +317,41 @@ async def list_tools() -> ListToolsResult:
     )
 
 
+_JSON_TYPES: dict[str, type] = {
+    "string": str,
+    "integer": int,
+    "boolean": bool,
+    "object": dict,
+    "array": list,
+}
+
+
+def _check_type(name: str, schema: dict[str, Any], value: Any) -> None:
+    expected = schema.get("type")
+    wanted = _JSON_TYPES.get(str(expected))
+    if wanted is None:
+        return
+    if not isinstance(value, wanted) or (expected == "integer" and isinstance(value, bool)):
+        raise InvalidRequest(f"tool argument {name!r} must be a JSON {expected}")
+    items = schema.get("items")
+    if expected == "array" and isinstance(items, dict):
+        for index, item in enumerate(value):
+            _check_type(f"{name}[{index}]", items, item)
+
+
 def _validate_arguments(spec: ToolSpec, arguments: dict[str, Any]) -> None:
+    properties: dict[str, Any] = spec.schema.get("properties", {})
     required = set(spec.schema.get("required", []))
     missing = required - set(arguments)
-    unknown = set(arguments) - set(spec.schema.get("properties", {}))
+    unknown = set(arguments) - set(properties)
     if missing:
         raise InvalidRequest(f"missing tool arguments: {sorted(missing)}")
     if unknown:
         raise InvalidRequest(f"unknown tool arguments: {sorted(unknown)}")
+    # The advertised inputSchema is a promise to the client, not a check on it: an MCP
+    # client is free to send anything, so the types are enforced here as well.
+    for name, value in arguments.items():
+        _check_type(name, properties[name], value)
 
 
 def _adapt_dates(arguments: dict[str, Any]) -> dict[str, Any]:

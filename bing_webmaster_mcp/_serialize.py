@@ -28,13 +28,19 @@ def parse_bing_datetime(value: str) -> datetime:
             f"not an ASP.NET tick date: {value!r}",
             suggestion="Bing JSON dates must use /Date(milliseconds±hhmm)/",
         )
-    moment = datetime.fromtimestamp(int(match["ms"]) / 1000, tz=UTC)
-    if match["sign"] is None:
-        return moment
-    offset = timedelta(hours=int(match["hh"]), minutes=int(match["mm"]))
-    if match["sign"] == "-":
-        offset = -offset
-    return moment.astimezone(timezone(offset))
+    try:
+        moment = datetime.fromtimestamp(int(match["ms"]) / 1000, tz=UTC)
+        if match["sign"] is None:
+            return moment
+        if int(match["mm"]) >= 60:
+            raise ValueError("timezone minutes must be below 60")
+        offset = timedelta(hours=int(match["hh"]), minutes=int(match["mm"]))
+        if match["sign"] == "-":
+            offset = -offset
+        return moment.astimezone(timezone(offset))
+    except (OSError, OverflowError, ValueError) as exc:
+        # A tick count or an offset outside what datetime can represent.
+        raise MalformedResponse(f"tick date is out of range: {value!r}") from exc
 
 
 def encode_bing_datetime(value: datetime) -> str:

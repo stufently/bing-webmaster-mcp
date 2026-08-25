@@ -118,3 +118,16 @@ async def test_verify_happens_before_submission() -> None:
         with pytest.raises(InvalidRequest):
             await indexnow.verify_and_submit(http, HOST, KEY, [f"https://{HOST}/p"])
     assert calls == [indexnow.key_location(HOST, KEY)]
+
+
+@pytest.mark.parametrize("host", ["[abc", "a b.example", "a.example:8080", "-bad.example", ""])
+def test_unusable_indexnow_hosts_raise_a_public_error(host: str) -> None:
+    with pytest.raises(InvalidRequest):
+        indexnow.validate_host(host)
+
+
+def test_unparsable_key_location_and_urls_stay_in_the_taxonomy() -> None:
+    with pytest.raises(InvalidRequest):
+        indexnow.validate_key_location(HOST, KEY, "https://[abc")
+    with pytest.raises(InvalidRequest):
+        indexnow.validate_urls(HOST, KEY, ["https://[abc"])

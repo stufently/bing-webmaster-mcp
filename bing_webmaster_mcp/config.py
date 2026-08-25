@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, ValidationError
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 
 from .errors import AuthFailed, InvalidRequest, PolicyDenied
+
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
 def _default_state_dir() -> Path:
@@ -29,6 +33,14 @@ class Settings(BaseSettings):
     http_port: int = Field(default=8765, ge=1, le=65535)
     http_bearer_token: SecretStr | None = None
 
+    @field_validator("denied_sites")
+    @classmethod
+    def _denied_sites_must_name_a_host(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        unusable = [site for site in value if _policy_key(site) is None]
+        if unusable:
+            raise ValueError(f"entries name no host: {unusable}")
+        return value
+
     @classmethod
     def load(cls, *, require_api_key: bool = True) -> Settings:
         try:
@@ -39,6 +51,13 @@ class Settings(BaseSettings):
                 suggestion="check the named environment variables",
                 details={"fields": [str(error["loc"][0]) for error in exc.errors()]},
             ) from exc
+        except SettingsError as exc:
+            # Raised before validation when a list/dict-valued variable is not JSON.
+            raise InvalidRequest(
+                "invalid BING_WM_* configuration",
+                suggestion="list-valued variables must be JSON, e.g. '[\"https://a.example\"]'",
+                details={"error": str(exc)},
+            ) from exc
         if require_api_key and settings.api_key is None:
             raise AuthFailed(
                 "BING_WM_API_KEY is not set",
@@ -47,14 +66,46 @@ class Settings(BaseSettings):
         return settings
 
     def check_site_allowed(self, site_url: str) -> None:
-        if _normalise_for_policy(site_url) in {
-            _normalise_for_policy(site) for site in self.denied_sites
-        }:
-            raise PolicyDenied(
-                f"{site_url} is in BING_WM_DENIED_SITES",
-                suggestion="remove it from the denylist only after reviewing the policy",
-            )
+        key = _policy_key(site_url)
+        if key is None:
+            return
+        host, path = key
+        for denied in self.denied_sites:
+            entry = _policy_key(denied)
+            if entry is None or entry[0] != host:
+                continue
+            denied_path = entry[1]
+            if not denied_path or path == denied_path or path.startswith(f"{denied_path}/"):
+                raise PolicyDenied(
+                    f"{site_url} is in BING_WM_DENIED_SITES",
+                    suggestion="remove it from the denylist only after reviewing the policy",
+                )
 
 
-def _normalise_for_policy(site_url: str) -> str:
-    return site_url.strip().rstrip("/").casefold()
+def _policy_key(site_url: str) -> tuple[str, str] | None:
+    """Reduce a site to the (host, path) pair the denylist matches on.
+
+    Matching on the raw string lets http/https, an explicit :443, a trailing dot or a
+    change of case walk straight past a denied site, so the comparison uses the parsed
+    host instead. Entries may be written either as a URL or as a bare hostname; a denied
+    entry without a path covers every path on that host. ``None`` means the value names
+    no host at all, which is refused for a denylist entry and cannot match anything.
+    """
+    candidate = site_url.strip().rstrip("/")
+    if _SCHEME.match(candidate) is None and not candidate.startswith("//"):
+        # Testing for "//" anywhere would read "a.example/shop//eu" as an authority URL
+        # and reduce it to nothing a real site could match.
+        candidate = f"//{candidate}"
+    try:
+        parsed = urlsplit(candidate)
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    host = host.rstrip(".").casefold()
+    if not host:
+        # "." and "..." parse to a hostname that normalises away entirely.
+        return None
+    authority = host if port in (None, 80, 443) else f"{host}:{port}"
+    return authority, parsed.path.rstrip("/")

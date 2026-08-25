@@ -47,3 +47,15 @@ def test_decode_walks_and_drops_type_markers() -> None:
 def test_encode_datetime_uses_aspnet_ticks() -> None:
     value = datetime(1970, 1, 1, tzinfo=timezone(timedelta(hours=2)))
     assert encode_bing_datetime(value) == "/Date(-7200000+0200)/"
+
+
+def test_out_of_range_tick_date_is_a_malformed_response() -> None:
+    with pytest.raises(MalformedResponse):
+        parse_bing_datetime("/Date(99999999999999999)/")
+    with pytest.raises(MalformedResponse):
+        parse_bing_datetime("/Date(0+9900)/")
+
+
+def test_timezone_minutes_must_be_below_sixty() -> None:
+    with pytest.raises(MalformedResponse):
+        parse_bing_datetime("/Date(0+0060)/")
