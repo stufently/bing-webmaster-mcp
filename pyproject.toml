@@ -9,6 +9,15 @@ description = "bing-webmaster-mcp gives an AI agent read access to what Bing kno
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
+keywords = [
+    "bing",
+    "bing-webmaster-tools",
+    "cli",
+    "indexnow",
+    "mcp",
+    "model-context-protocol",
+    "seo",
+]
 # Floors, not pins. A published package that pins exact versions breaks every
 # environment that already has a working newer one. Exact versions are frozen in
 # constraints.txt, which is what CI and the Docker image install.
@@ -25,6 +34,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
+
+[project.urls]
+Changelog = "https://github.com/stufently/bing-webmaster-mcp/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/stufently/bing-webmaster-mcp#readme"
+Issues = "https://github.com/stufently/bing-webmaster-mcp/issues"
+Repository = "https://github.com/stufently/bing-webmaster-mcp"
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.9"]
