@@ -38,11 +38,19 @@ def test_site_normalisation(raw: str, expected: str) -> None:
 @pytest.mark.parametrize(
     "raw",
     [
+        "",
+        "https://",
+        "http://",
         "ftp://example.com",
         "FTP://example.com",
         "mailto:a@b.example",
         "[abc",
         "https://example.com?a=1",
+        "https://a b.example",
+        "https://-bad.example",
+        "https://a_example",
+        "https://a.example/shop/../admin",
+        "https://a.example/shop/%2e%2e/admin",
     ],
 )
 def test_unusable_site_urls_are_rejected(raw: str) -> None:

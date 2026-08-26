@@ -45,20 +45,6 @@ class RateLimiter:
         ).fetchone()
         return int(row[0]) if row else 0
 
-    def check(self, key: str, cost: int = 1) -> None:
-        if cost < 0:
-            raise ValueError("cost must be non-negative")
-        if self._max is None:
-            return
-        with closing(self._connect()) as connection, connection:
-            used = self._used(connection, key)
-        if used + cost > self._max:
-            raise QuotaExceeded(
-                f"local daily write limit reached for {key}: {used}/{self._max}",
-                suggestion="change BING_WM_MAX_WRITES_PER_DAY or wait for the UTC day rollover",
-                details={"used": used, "requested": cost, "local_max": self._max},
-            )
-
     def release(self, key: str, cost: int = 1, *, day: str | None = None) -> None:
         """Give back a reservation for a request that never reached the network.
 

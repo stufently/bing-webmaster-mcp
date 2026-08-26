@@ -96,6 +96,19 @@ def test_denied_site_with_a_path_covers_its_subpaths_only(tmp_path) -> None:
     settings.check_site_allowed("https://a.example")
 
 
+@pytest.mark.parametrize(
+    "site",
+    [
+        "https://a.example/shop/../admin",
+        "https://a.example/shop/%2e%2e/admin",
+    ],
+)
+def test_ambiguous_site_path_cannot_bypass_a_path_denylist(tmp_path, site: str) -> None:
+    settings = Settings(api_key="k", state_dir=tmp_path, denied_sites=("https://a.example/admin",))
+    with pytest.raises(InvalidRequest, match="dot segments"):
+        settings.check_site_allowed(site)
+
+
 def test_denied_host_covers_every_path_on_it(tmp_path) -> None:
     settings = Settings(api_key="k", state_dir=tmp_path, denied_sites=("a.example",))
     with pytest.raises(PolicyDenied):

@@ -8,6 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+try:  # pragma: no cover - Windows has no fcntl; O_APPEND still protects each write offset.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
+
 
 class AuditLog:
     def __init__(self, state_dir: Path) -> None:
@@ -20,8 +25,18 @@ class AuditLog:
         line = (json.dumps(entry, ensure_ascii=False, default=str) + "\n").encode()
         descriptor = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            os.write(descriptor, line)
+            if fcntl is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            remaining = memoryview(line)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written == 0:
+                    raise OSError("audit write returned zero bytes")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
         finally:
+            if fcntl is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
 
     def entries(self) -> list[dict[str, Any]]:

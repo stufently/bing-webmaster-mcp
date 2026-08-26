@@ -52,7 +52,7 @@ bing-webmaster-mcp-http = "bing_webmaster_mcp.http_server:main"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = ["tests"]
+pythonpath = [".", "tests"]
 filterwarnings = ["error::DeprecationWarning:bing_webmaster_mcp.*"]
 
 [tool.ruff]

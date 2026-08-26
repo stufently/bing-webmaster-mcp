@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import struct
+import tomllib
 from pathlib import Path
 
 from bing_webmaster_mcp.mcp_server import tool_names
@@ -69,3 +72,19 @@ def test_supporting_metadata_exists() -> None:
     assert "bing-webmaster-mcp" in (ROOT / "CITATION.cff").read_text()
     assert "## Unreleased" in (ROOT / "CHANGELOG.md").read_text()
     assert len((ROOT / "llms.txt").read_text().splitlines()) >= 8
+
+
+def test_registry_metadata_matches_the_package_and_readme_marker() -> None:
+    registry = json.loads((ROOT / "server.json").read_text())
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    assert registry["name"] == "io.github.stufently/bing-webmaster-mcp"
+    assert registry["version"] == project["version"]
+    assert registry["packages"][0]["identifier"] == project["name"]
+    assert registry["packages"][0]["version"] == project["version"]
+    assert f"mcp-name: {registry['name']} -->" in (ROOT / "README.md").read_text()
+
+
+def test_social_preview_has_githubs_required_dimensions() -> None:
+    data = (ROOT / "docs" / "assets" / "social-preview.png").read_bytes()
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    assert struct.unpack(">II", data[16:24]) == (1280, 640)

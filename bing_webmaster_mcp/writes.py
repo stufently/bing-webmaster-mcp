@@ -10,8 +10,8 @@ from urllib.parse import SplitResult
 
 from .errors import InvalidRequest
 from .ops._common import normalise_site
-from .ops._common import split_url as _split
 from .render import sanitize_text
+from .urls import normalise_hostname, split_url, validate_http_url
 
 MAX_BING_URL_BATCH = 500
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
@@ -261,9 +261,7 @@ def _integer(args: dict[str, Any], name: str) -> int:
 
 
 def _ensure_absolute(value: str, name: str) -> str:
-    parsed = _split(value, name)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
-        raise InvalidRequest(f"{name} must be an absolute HTTP(S) URL")
+    validate_http_url(value, name)
     return value
 
 
@@ -284,16 +282,18 @@ def _authority(parsed: SplitResult) -> tuple[str | None, int | None]:
     ``http://`` and they still submit their live ``https://`` URLs. A port that is not
     the scheme default does identify a different site, so it is compared.
     """
-    port = parsed.port if parsed.port not in (None, 80, 443) else None
-    return parsed.hostname, port
+    default_port = {"http": 80, "https": 443}.get(parsed.scheme)
+    port = parsed.port if parsed.port not in (None, default_port) else None
+    hostname = normalise_hostname(parsed.hostname or "", "url")
+    return hostname, port
 
 
 def _ensure_site_url(value: str, site: str) -> None:
     # Called directly with values lifted out of complex objects, so the scheme is checked
     # here too: matching only the hostname would let "ftp://a.example/p" through.
     _ensure_absolute(value, "url")
-    candidate = _split(value, "url")
-    owner = _split(site, "site_url")
+    candidate = split_url(value, "url")
+    owner = split_url(site, "site_url")
     if _authority(candidate) != _authority(owner):
         raise InvalidRequest(f"URL {value!r} does not belong to site {site!r}")
     owner_path = owner.path.rstrip("/")
@@ -333,8 +333,10 @@ def _complex(args: dict[str, Any], argument: str, type_name: str) -> dict[str, A
 
 def _content(args: dict[str, Any], site: str) -> dict[str, Any]:
     url = _site_url(args, "url", site)
-    http_message = _validated_base64(args, "http_message", allow_empty=False)
-    structured_data = _validated_base64(args, "structured_data", allow_empty=True)
+    http_message, http_size = _validated_base64(args, "http_message", allow_empty=False)
+    structured_data, structured_size = _validated_base64(args, "structured_data", allow_empty=True)
+    if http_size + structured_size > MAX_CONTENT_BYTES:
+        raise InvalidRequest("SubmitContent exceeds the documented 10 MB payload limit")
     dynamic_serving = _integer(args, "dynamic_serving")
     if dynamic_serving not in range(6):
         raise InvalidRequest("dynamic_serving must be an integer from 0 through 5")
@@ -346,16 +348,14 @@ def _content(args: dict[str, Any], site: str) -> dict[str, Any]:
     }
 
 
-def _validated_base64(args: dict[str, Any], name: str, *, allow_empty: bool) -> str:
+def _validated_base64(args: dict[str, Any], name: str, *, allow_empty: bool) -> tuple[str, int]:
     value = args.get(name)
     if value == "" and allow_empty:
-        return ""
+        return "", 0
     if not isinstance(value, str) or not value:
         raise InvalidRequest(f"{name} must be a base64 string")
     try:
         decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise InvalidRequest(f"{name} must be valid base64") from exc
-    if len(decoded) > MAX_CONTENT_BYTES:
-        raise InvalidRequest(f"{name} exceeds the documented 10 MB payload limit")
-    return value
+    return value, len(decoded)

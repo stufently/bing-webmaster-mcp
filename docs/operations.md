@@ -16,7 +16,8 @@ accept `--json`; lists render as human-readable tables otherwise.
 - `bing-wm indexnow key`
 - `bing-wm plan submit-url|submit-urls|submit-sitemap|block-url|indexnow`
 - `bing-wm plan create OPERATION --args-json OBJECT` covers every write below.
-- `bing-wm plan list|show|reject|apply`; apply prompts unless `--yes` is supplied.
+- `bing-wm plan list|show|reject|apply|unlock`; apply and unlock prompt unless `--yes`
+  is supplied.
 
 ## MCP read tools
 
@@ -83,6 +84,10 @@ The generic planner accepts `add_blocked_url`, `add_connected_page`,
 Complex values use the exact property names in [the API surface](api-surface.md).
 Enum-valued fields use numeric values; invented enum names are not accepted.
 
+`add_site_roles.delegated_url` must be an absolute HTTP(S) URL but is deliberately not
+restricted to `site_url`'s host. Microsoft's JSON example delegates `example.com` to
+`host1.example.com`, so a cross-host value is part of the documented operation shape.
+
 ## State, audit, and recovery
 
 Plan files are mode `0600` under a mode `0700` directory. Plans expire after 15 minutes
@@ -90,16 +95,33 @@ by default and move to terminal `applied`, `rejected`, or `unknown_outcome` stat
 Applying acquires an exclusive lock before the request. A process crash after a request
 therefore leaves a lock instead of allowing an accidental duplicate.
 
+If recording `applied` or `unknown_outcome` fails after dispatch, the apply process also
+keeps its lock. This deliberately converts a local disk failure into the same audited
+operator-recovery path as a process crash instead of leaving a retryable `pending` plan.
+
 `bing-wm plan apply` prints the prepared request body before asking for confirmation,
 because for the complex-object writes the one-line summary names only the site. A write
 whose outcome cannot be known — a lost response, an HTTP 5xx from Bing, or a 2xx whose
 body cannot be read — becomes `unknown_outcome` and is never retried automatically. A
 plan whose TTL elapses while its request is in flight still records what happened to it.
-An IndexNow 5xx is the exception and stays a plain retryable failure: resubmitting the
-same URLs is a protocol-level no-op.
+An IndexNow 5xx is the exception and leaves the plan pending as a retryable failure:
+the protocol directs callers to resubmit a valid request after a non-success response.
+The CLI does not retry automatically, and repeated submissions can consume crawl quota.
 
 `audit.jsonl` records creation, attempts, failures, denials, unknown outcomes, and
 successes without storing the API key or content bodies. `limits.sqlite3` stores
 configured local counters transactionally; a plan reserves its cost before the request
 and the reservation is released only if the request never reached Bing. For an unknown
 outcome, inspect Bing and the audit log; do not create a replacement blindly.
+
+A SIGKILL or power loss can leave `<plan_id>.lock` after its process has died. Run
+`bing-wm plan unlock <plan_id>` to recover it. The command refuses a live PID, a
+malformed lock, or a plan with no lock. Before removing a dead process's lock it marks
+any unfinished plan `unknown_outcome`, so recovery cannot enable an accidental second
+write; an already-terminal plan keeps its state. Both the start and completion of the
+recovery are appended to `audit.jsonl`.
+
+Site-scoped and IndexNow URL paths reject literal or repeatedly percent-encoded dot
+segments before ownership and denylist comparisons. IndexNow key-file preflight does not
+follow redirects, accepts only the submitted multi-label DNS host on the default HTTPS port,
+and requires the response body to contain exactly the key.

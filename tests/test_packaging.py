@@ -41,3 +41,11 @@ def test_release_uses_trusted_publishing() -> None:
     assert "id-token: write" in text
     assert "environment: pypi" in text
     assert "PYPI" not in text.replace("pypi", "")
+
+
+def test_release_runs_quality_gates_before_publishing() -> None:
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+    publish = text.index("pypa/gh-action-pypi-publish")
+    for command in ("make lint", "make test", "python scripts/smoke_mcp.py"):
+        assert command in text
+        assert text.index(command) < publish

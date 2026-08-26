@@ -666,6 +666,28 @@ def plan_reject(plan_id: str, as_json: bool) -> None:
     emit({"plan_id": plan_id, "state": "rejected"}, as_json)
 
 
+@plan_group.command("unlock")
+@click.argument("plan_id")
+@click.option("--yes", is_flag=True, help="Skip the human confirmation prompt.")
+@json_option
+@guarded
+def plan_unlock(plan_id: str, yes: bool, as_json: bool) -> None:
+    """Recover an apply lock after its process died."""
+    settings = _load_settings(require_api_key=False)
+    if not yes:
+        click.confirm(
+            "Recover this lock? An unfinished plan becomes unknown_outcome and cannot be applied",
+            abort=True,
+        )
+    plan, owner_pid = PlanStore(settings.state_dir, settings.plan_ttl_seconds).recover_lock(
+        plan_id, AuditLog(settings.state_dir)
+    )
+    emit(
+        {"plan_id": plan_id, "state": plan.state, "recovered_owner_pid": owner_pid},
+        as_json,
+    )
+
+
 @plan_group.command("apply")
 @click.argument("plan_id")
 @click.option("--yes", is_flag=True, help="Skip the human confirmation prompt.")

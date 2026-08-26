@@ -55,6 +55,12 @@ async def test_error_results_keep_public_error_contract() -> None:
     assert result.structured_content["code"] == "INVALID_REQUEST"
 
 
+async def test_unknown_tool_is_an_invalid_request_not_an_internal_failure() -> None:
+    result = await mcp_server.call_tool("not_a_tool", {})
+    assert result.is_error is True
+    assert result.structured_content["code"] == "INVALID_REQUEST"
+
+
 @pytest.mark.parametrize(
     ("name", "arguments"),
     [

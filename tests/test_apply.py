@@ -18,6 +18,7 @@ from bing_webmaster_mcp.errors import (
     PlanUnknownOutcome,
     PolicyDenied,
     QuotaExceeded,
+    UpstreamUnavailable,
 )
 from bing_webmaster_mcp.limits import RateLimiter
 from bing_webmaster_mcp.plans import PlanStore, create_write_plan
@@ -149,6 +150,33 @@ async def test_indexnow_plan_verifies_key_then_submits(tmp_path) -> None:
     )
     assert result["applied"] is True
     assert calls == [prepared.body["keyLocation"], "https://api.indexnow.org/indexnow"]
+
+
+async def test_indexnow_5xx_stays_retryable_as_the_protocol_directs(tmp_path) -> None:
+    store = PlanStore(tmp_path, 900)
+    args = sample_args("indexnow_submit")
+    prepared = WRITE_OPS["indexnow_submit"].prepare(args)
+    plan = store.create("indexnow_submit", "https://a.example", args, prepared.summary)
+    limiter = RateLimiter(tmp_path, max_per_day=1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, text=args["key"], request=request)
+        return httpx.Response(503, request=request)
+
+    with pytest.raises(UpstreamUnavailable):
+        await apply_plan(
+            plan.plan_id,
+            settings=fake_settings(tmp_path),
+            store=store,
+            client=None,
+            audit=AuditLog(tmp_path),
+            limiter=limiter,
+            indexnow_transport=httpx.MockTransport(handler),
+        )
+
+    assert store.get(plan.plan_id).state == "pending"
+    limiter.consume("https://a.example", 1)
 
 
 @pytest.mark.parametrize("name", sorted(name for name in WRITE_OPS if name != "indexnow_submit"))
@@ -301,7 +329,7 @@ async def test_a_refused_write_gives_its_reservation_back(tmp_path) -> None:
                 audit=AuditLog(tmp_path),
                 limiter=limiter,
             )
-    limiter.check("https://a.example", 1)
+    limiter.consume("https://a.example", 1)
 
 
 async def test_out_of_range_date_in_a_write_response_is_an_unknown_outcome(tmp_path) -> None:
@@ -398,7 +426,7 @@ async def test_interrupt_during_the_indexnow_preflight_leaves_the_plan_retryable
         )
     # Nothing was submitted, so the plan stays usable and the reservation is given back.
     assert store.get(plan.plan_id).state == "pending"
-    limiter.check("https://a.example", 5)
+    limiter.consume("https://a.example", 5)
 
 
 async def test_a_failed_audit_write_gives_the_reservation_back(tmp_path) -> None:
@@ -423,4 +451,59 @@ async def test_a_failed_audit_write_gives_the_reservation_back(tmp_path) -> None
                 limiter=limiter,
             )
     assert transport.calls == []
-    limiter.check("https://a.example", 1)
+    limiter.consume("https://a.example", 1)
+
+
+async def test_terminal_state_write_failure_keeps_the_apply_lock(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+
+    class BrokenOutcomeStore(PlanStore):
+        def mark_applied(self, plan_id: str):
+            raise OSError("disk full after the upstream write succeeded")
+
+    store = BrokenOutcomeStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+    transport = bing_transport({"AddSite": None})
+
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(OSError, match="disk full"):
+            await apply_plan(
+                plan.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=RateLimiter(tmp_path, max_per_day=None),
+            )
+
+    assert len(transport.calls) == 1
+    assert store.get(plan.plan_id).state == "pending"
+    assert (tmp_path / "plans" / f"{plan.plan_id}.lock").exists()
+
+
+async def test_unknown_outcome_write_failure_keeps_the_apply_lock(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+
+    class BrokenOutcomeStore(PlanStore):
+        def mark_unknown(self, plan_id: str):
+            raise OSError("disk full while recording the unknown outcome")
+
+    store = BrokenOutcomeStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("lost response", request=request)
+
+    async with BingClient(settings, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(OSError, match="disk full"):
+            await apply_plan(
+                plan.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=RateLimiter(tmp_path, max_per_day=None),
+            )
+
+    assert store.get(plan.plan_id).state == "pending"
+    assert (tmp_path / "plans" / f"{plan.plan_id}.lock").exists()

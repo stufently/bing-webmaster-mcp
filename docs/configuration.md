@@ -23,6 +23,8 @@ as a bare hostname. Matching is exact per host: a denied `example.com` does not 
 `www.example.com`, which Bing treats as a separate site. An entry without a path denies
 every path on that host; an entry with a path denies that path and everything under it.
 The denylist is re-checked when a plan is applied, not only when it is created.
+Ambiguous paths containing literal or percent-encoded dot segments are invalid rather
+than being compared as raw strings, so `/shop/../admin` cannot bypass an `/admin` entry.
 
 A variable that holds a list must be JSON, for example
 `BING_WM_DENIED_SITES='["https://locked.example"]'`. A bare value is reported as an

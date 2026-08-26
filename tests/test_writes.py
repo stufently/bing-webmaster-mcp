@@ -145,6 +145,15 @@ def test_content_must_be_base64_and_dynamic_serving_in_range() -> None:
         prepare_write("submit_content", args)
 
 
+def test_content_limit_applies_to_the_whole_uncompressed_request() -> None:
+    args = sample_args("submit_content")
+    args["http_message"] = base64.b64encode(b"x" * (6 * 1024 * 1024)).decode()
+    args["structured_data"] = base64.b64encode(b"x" * (5 * 1024 * 1024)).decode()
+
+    with pytest.raises(InvalidRequest, match="10 MB"):
+        prepare_write("submit_content", args)
+
+
 def test_complex_types_reject_invented_fields() -> None:
     args = sample_args("save_crawl_settings")
     args["crawl_settings"]["AjaxEnabled"] = True
@@ -200,6 +209,16 @@ def test_delegated_url_must_be_an_absolute_url() -> None:
         prepare_write("add_site_roles", args)
 
 
+def test_delegated_url_may_name_the_subdomain_in_microsofts_example() -> None:
+    args = {
+        **sample_args("add_site_roles"),
+        "site_url": "http://example.com",
+        "delegated_url": "http://host1.example.com",
+    }
+    prepared = prepare_write("add_site_roles", args)
+    assert prepared.body["delegatedUrl"] == "http://host1.example.com"
+
+
 def test_url_with_an_unparsable_port_inside_a_complex_object_is_rejected() -> None:
     args = {
         "site_url": SITE,
@@ -235,3 +254,31 @@ def test_a_site_on_an_explicit_port_keeps_its_own_urls() -> None:
     site = "https://a.example:8443"
     prepared = prepare_write("submit_url", {"site_url": site, "url": f"{site}/p"})
     assert prepared.body["url"] == f"{site}/p"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://a.example/shop/../admin",
+        "https://a.example/shop/%2e%2e/admin",
+        "https://a.example/shop%2f..%2fadmin",
+        "https://a.example/shop/%252e%252e/admin",
+    ],
+)
+def test_ambiguous_paths_cannot_bypass_registered_site_scope(url: str) -> None:
+    with pytest.raises(InvalidRequest, match="dot segments"):
+        prepare_write("submit_url", {"site_url": "https://a.example/shop", "url": url})
+
+
+@pytest.mark.parametrize(
+    ("site", "url"),
+    [
+        ("http://a.example:443", "http://a.example/p"),
+        ("https://a.example:80", "https://a.example/p"),
+    ],
+)
+def test_a_port_that_is_non_default_for_its_scheme_identifies_another_site(
+    site: str, url: str
+) -> None:
+    with pytest.raises(InvalidRequest):
+        prepare_write("submit_url", {"site_url": site, "url": url})

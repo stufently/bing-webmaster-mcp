@@ -1,6 +1,6 @@
 # bing-webmaster-mcp — implementation spec
 
-Status: design, nothing implemented yet. Written 2026-08-25.
+Status: implemented for 0.1.0; release pending. Written 2026-08-25.
 
 This document is the contract for the first implementation. It is written to be
 handed to a coding agent: every section states what to build, and the facts it
@@ -378,7 +378,8 @@ what will not have absorbed the SOAP/POX retirement or the tick-date handling.
 ## 11. Tests
 
 `tests/` mirrors modules 1:1. `asyncio_mode = "auto"`, `testpaths = ["tests"]`,
-`pythonpath = ["tests"]` so `fakes` imports by bare name, and
+`pythonpath = [".", "tests"]` so the checkout and `fakes` import without requiring an
+editable install, and
 `filterwarnings = ["error::DeprecationWarning:bing_webmaster_mcp.*"]`.
 
 A shared `tests/fakes.py` provides a fake transport. **No test may reach the

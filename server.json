@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.stufently/bing-webmaster-mcp",
+  "title": "Bing Webmaster MCP",
+  "description": "Read Bing Webmaster data and review every Bing or IndexNow write before applying it.",
+  "repository": {
+    "url": "https://github.com/stufently/bing-webmaster-mcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "bing-webmaster-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "description": "API key from Bing Webmaster Tools Settings > API Access",
+          "isRequired": true,
+          "format": "string",
+          "isSecret": true,
+          "name": "BING_WM_API_KEY"
+        }
+      ]
+    }
+  ]
+}

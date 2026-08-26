@@ -157,3 +157,20 @@ def test_apply_prompt_strips_bidi_characters_from_the_payload(tmp_path, monkeypa
     assert result.exit_code == 1
     assert "‮" not in result.output
     assert "utmsource" in result.output
+
+
+def test_plan_unlock_recovers_a_dead_apply_without_making_it_retryable(
+    tmp_path, monkeypatch
+) -> None:
+    settings = fake_settings(tmp_path)
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: settings)
+    monkeypatch.setattr("bing_webmaster_mcp.plans._pid_is_alive", lambda _pid: False)
+    store = cli.PlanStore(tmp_path, settings.plan_ttl_seconds)
+    plan = store.create("add_site", "https://a.example", {"site_url": "https://a.example"}, "x")
+    (tmp_path / "plans" / f"{plan.plan_id}.lock").write_text("pid=12345\n")
+
+    result = CliRunner().invoke(cli.main, ["plan", "unlock", plan.plan_id, "--yes", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["state"] == "unknown_outcome"
+    assert store.get(plan.plan_id).state == "unknown_outcome"

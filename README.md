@@ -1,5 +1,7 @@
 # bing-webmaster-mcp
 
+<!-- mcp-name: io.github.stufently/bing-webmaster-mcp -->
+
 bing-webmaster-mcp gives an AI agent read access to what Bing knows about your sites — traffic, indexing, crawl issues, inbound links, keywords — and a reviewed, two-step path for the operations that change something.
 
 It ships a Python 3.12+ CLI and MCP server for the JSON Bing Webmaster Tools API,
@@ -26,6 +28,11 @@ confirmation prompt injection can send. An MCP client that also has shell access
 still invoke the CLI; the compensating controls are a readable plan, an append-only
 audit trail, one-shot application, expiry, a site denylist, and restart-persistent
 local limits.
+
+If the applying process is killed and leaves a lock behind, the command
+`bing-wm plan unlock PLAN_ID` verifies that the recorded PID is gone before recovering
+it. An unfinished plan becomes `unknown_outcome` and cannot be applied again; the
+recovery is audited.
 
 ## Install
 
@@ -99,10 +106,14 @@ bing-wm plan indexnow example.com --file PATH --key KEY
 bing-wm plan apply PLAN_ID
 ```
 
-The apply step checks that the key file is reachable and contains the key before it
-sends the batch. Batches above 10,000 URLs and URLs outside the authorized host or key
-subpath are rejected locally. There is intentionally no unverified 2,048-character URL
-cap.
+The apply step checks the exact key-file URL without following redirects before it sends
+the batch. IndexNow hosts must use multi-label DNS names rather than IP literals or
+single-label names, and the key file must
+contain only the key. Batches above 10,000 URLs, ambiguous dot-segment paths, and URLs
+outside the authorized host or key subpath are rejected locally. There is intentionally
+no unverified 2,048-character URL cap. IndexNow's protocol tells callers to resubmit a
+valid request after a non-success response, so an HTTP 5xx leaves the plan pending; the
+CLI never retries it automatically.
 
 ## Output safety
 

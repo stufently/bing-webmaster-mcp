@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import secrets
 from typing import Any
@@ -16,7 +17,7 @@ from ..errors import (
     RateLimited,
     UpstreamUnavailable,
 )
-from ._common import split_url
+from ..urls import validate_http_url
 
 ENDPOINT = "https://api.indexnow.org/indexnow"
 MAX_BATCH = 10_000
@@ -45,11 +46,17 @@ def validate_host(host: str) -> str:
     candidate = host.strip().casefold()
     # Checked before urlsplit, which raises a bare ValueError on an unbalanced bracket
     # and happily accepts hostnames containing spaces.
-    if _HOST.fullmatch(candidate) is None:
+    if _HOST.fullmatch(candidate) is None or "." not in candidate:
         raise InvalidRequest("IndexNow host must be a hostname without a scheme, path, or port")
     parsed = urlsplit(f"//{candidate}")
     if parsed.hostname != candidate or parsed.username is not None or parsed.port is not None:
         raise InvalidRequest("IndexNow host must be a hostname without a scheme, path, or port")
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        pass
+    else:
+        raise InvalidRequest("IndexNow host must be a DNS hostname, not an IP address")
     return candidate
 
 
@@ -59,10 +66,17 @@ def key_location(host: str, key: str) -> str:
 
 
 def validate_key_location(host: str, key: str, location: str | None) -> str:
+    validate_key(key)
     if location is None:
         return key_location(host, key)
-    parsed = split_url(location, "keyLocation")
-    if parsed.scheme != "https" or parsed.hostname != validate_host(host) or parsed.username:
+    parsed, location_host = validate_http_url(location, "keyLocation")
+    if (
+        parsed.scheme != "https"
+        or location_host != validate_host(host)
+        or parsed.port not in (None, 443)
+        or parsed.query
+        or parsed.fragment
+    ):
         raise InvalidRequest("keyLocation must be an HTTPS URL on the submitted host")
     return location
 
@@ -83,8 +97,8 @@ def validate_urls(
 
     key_path = urlsplit(normalized_location).path.rsplit("/", 1)[0]
     for url in urls:
-        parsed = split_url(url, "urlList")
-        if parsed.scheme not in {"http", "https"} or parsed.hostname != normalized_host:
+        parsed, url_host = validate_http_url(url, "urlList")
+        if url_host != normalized_host:
             raise InvalidRequest(f"URL {url!r} does not belong to IndexNow host {normalized_host}")
         if key_path and parsed.path != key_path and not parsed.path.startswith(f"{key_path}/"):
             raise InvalidRequest(f"URL {url!r} is outside the key path {key_path!r}")
@@ -99,15 +113,24 @@ async def verify_key_file(
 ) -> None:
     url = validate_key_location(host, key, location)
     try:
-        response = await http.get(url, follow_redirects=True)
+        async with http.stream("GET", url, follow_redirects=False) as response:
+            if response.status_code != 200:
+                raise InvalidRequest(
+                    f"IndexNow key file {url} is not reachable (HTTP {response.status_code})",
+                    suggestion="serve the UTF-8 key file at that exact path without authentication",
+                )
+            expected = key.encode()
+            content = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(content) + len(chunk) > len(expected):
+                    raise InvalidRequest(
+                        f"IndexNow key file {url} does not contain the expected key",
+                        suggestion="the file must contain the key and no other content",
+                    )
+                content.extend(chunk)
     except httpx.HTTPError as exc:
         raise InvalidRequest(f"IndexNow key file {url} is not reachable: {exc}") from exc
-    if response.status_code != 200:
-        raise InvalidRequest(
-            f"IndexNow key file {url} is not reachable (HTTP {response.status_code})",
-            suggestion="serve the UTF-8 key file at that exact path without authentication",
-        )
-    if response.text.strip() != key:
+    if bytes(content) != expected:
         raise InvalidRequest(
             f"IndexNow key file {url} does not contain the expected key",
             suggestion="the file must contain the key and no other content",

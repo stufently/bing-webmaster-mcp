@@ -415,7 +415,10 @@ def _jsonable(value: Any) -> Any:
 
 async def call_tool(name: str, arguments: dict[str, Any] | None) -> CallToolResult:
     try:
-        spec = TOOL_SPECS[name]
+        try:
+            spec = TOOL_SPECS[name]
+        except KeyError as exc:
+            raise InvalidRequest(f"unknown MCP tool: {name}") from exc
         values = dict(arguments or {})
         _validate_arguments(spec, values)
         result = _jsonable(await _dispatch(name, values))

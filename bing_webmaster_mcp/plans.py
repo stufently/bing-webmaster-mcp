@@ -7,6 +7,7 @@ import re
 import secrets
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from .audit import AuditLog
 from .client import BingClient
 from .config import Settings
 from .errors import (
+    InvalidRequest,
     MalformedResponse,
     PlanAlreadyApplied,
     PlanExpired,
@@ -27,6 +29,49 @@ from .ops._common import normalise_site
 from .writes import prepare_write
 
 _PLAN_ID = re.compile(r"^[0-9a-f]{32}$")
+_LOCK_OWNER = re.compile(r"^pid=([1-9][0-9]*)(?:\ntoken=([0-9a-f]{32}))?\n?$")
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written == 0:
+            raise OSError("write returned zero bytes")
+        remaining = remaining[written:]
+
+
+@dataclass
+class ApplyLease:
+    """A locked plan and whether recovery must retain its lock."""
+
+    plan: Plan
+    _retain_lock: bool = False
+
+    def preserve_lock(self) -> None:
+        self._retain_lock = True
+
+
+def _same_lock(path: Path, original: os.stat_result, contents: str) -> bool:
+    try:
+        current = path.lstat()
+        current_contents = path.read_text()
+    except (OSError, UnicodeError):
+        return False
+    return (current.st_dev, current.st_ino) == (
+        original.st_dev,
+        original.st_ino,
+    ) and current_contents == contents
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 class Plan(BaseModel):
@@ -70,6 +115,9 @@ class PlanStore:
             raise PlanNotFound(f"no plan {plan_id!r}")
         return self._directory / f"{plan_id}.json"
 
+    def _lock_path(self, plan_id: str) -> Path:
+        return self._path(plan_id).with_suffix(".lock")
+
     def create(self, operation: str, site_url: str, args: dict[str, Any], summary: str) -> Plan:
         now = datetime.now(UTC)
         plan = Plan(
@@ -89,10 +137,24 @@ class PlanStore:
         temporary = path.with_suffix(f".{secrets.token_hex(8)}.tmp")
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            os.write(descriptor, plan.model_dump_json(indent=2).encode())
+            _write_all(descriptor, plan.model_dump_json(indent=2).encode())
+            os.fsync(descriptor)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
         finally:
             os.close(descriptor)
-        os.replace(temporary, path)
+        try:
+            os.replace(temporary, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        if hasattr(os, "O_DIRECTORY"):
+            directory = os.open(self._directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
 
     def get(self, plan_id: str) -> Plan:
         path = self._path(plan_id)
@@ -154,27 +216,90 @@ class PlanStore:
     def set_expiry(self, plan_id: str, when: datetime) -> None:
         self._write(self.get(plan_id).model_copy(update={"expires_at": when}))
 
+    def recover_lock(self, plan_id: str, audit: AuditLog) -> tuple[Plan, int]:
+        """Remove a lock whose owning process is gone without enabling a duplicate write.
+
+        A dead process may have exited before or after dispatch. An unfinished plan is
+        therefore made terminal with ``unknown_outcome`` before its lock is removed.
+        Already-terminal plans keep their recorded outcome.
+        """
+        plan = self.get(plan_id)
+        path = self._lock_path(plan_id)
+        try:
+            contents = path.read_text()
+            identity = path.lstat()
+        except FileNotFoundError as exc:
+            raise InvalidRequest(f"plan {plan_id} has no apply lock to recover") from exc
+        except (OSError, UnicodeError) as exc:
+            raise InvalidRequest(f"plan {plan_id} has a malformed apply lock") from exc
+        owner = _LOCK_OWNER.fullmatch(contents)
+        if owner is None:
+            raise InvalidRequest(
+                f"plan {plan_id} has a malformed apply lock",
+                suggestion="inspect the lock file and running processes before changing it",
+            )
+        owner_pid = int(owner.group(1))
+        if _pid_is_alive(owner_pid):
+            raise PlanAlreadyApplied(
+                f"plan {plan_id} is locked by live process {owner_pid}; wait for it to finish"
+            )
+
+        previous_state = plan.state
+        if not (plan.applied_at or plan.rejected_at or plan.unknown_outcome_at):
+            plan = self.mark_unknown(plan_id)
+        audit.record(
+            "plan_lock_recovery_started",
+            plan_id=plan_id,
+            owner_pid=owner_pid,
+            previous_state=previous_state,
+            state=plan.state,
+        )
+        try:
+            if not _same_lock(path, identity, contents):
+                raise InvalidRequest(f"plan {plan_id} apply lock changed during recovery")
+            path.unlink()
+        except FileNotFoundError as exc:
+            raise InvalidRequest(f"plan {plan_id} apply lock was already removed") from exc
+        except OSError as exc:
+            raise InvalidRequest(f"plan {plan_id} apply lock could not be removed") from exc
+        audit.record(
+            "plan_lock_recovered",
+            plan_id=plan_id,
+            owner_pid=owner_pid,
+            previous_state=previous_state,
+            state=plan.state,
+        )
+        return plan, owner_pid
+
     @contextmanager
-    def _locked(self, plan_id: str, advice: str) -> Iterator[None]:
-        path = self._path(plan_id).with_suffix(".lock")
+    def _locked(self, plan_id: str, advice: str) -> Iterator[ApplyLease]:
+        path = self._lock_path(plan_id)
+        lease: ApplyLease | None = None
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError as exc:
             raise PlanAlreadyApplied(
                 f"plan {plan_id} is locked by an apply attempt; {advice}"
             ) from exc
+        identity = os.fstat(descriptor)
+        contents = f"pid={os.getpid()}\ntoken={secrets.token_hex(16)}\n"
         try:
-            os.write(descriptor, f"pid={os.getpid()}\n".encode())
-            os.close(descriptor)
-            yield
+            try:
+                _write_all(descriptor, contents.encode())
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            lease = ApplyLease(self.get(plan_id))
+            yield lease
         finally:
-            if path.exists():
+            if (lease is None or not lease._retain_lock) and _same_lock(path, identity, contents):
                 path.unlink()
 
     @contextmanager
-    def applying(self, plan_id: str) -> Iterator[Plan]:
-        with self._locked(plan_id, "its outcome may be unknown"):
-            yield self.ensure_pending(plan_id)
+    def applying(self, plan_id: str) -> Iterator[ApplyLease]:
+        with self._locked(plan_id, "its outcome may be unknown") as lease:
+            lease.plan = self.ensure_pending(plan_id)
+            yield lease
 
 
 async def create_write_plan(

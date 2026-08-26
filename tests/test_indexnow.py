@@ -27,7 +27,7 @@ def test_default_key_location_is_site_root() -> None:
 
 
 async def test_key_file_must_be_reachable_and_contain_key() -> None:
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=f"{KEY}\n"))
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=KEY))
     async with httpx.AsyncClient(transport=transport) as http:
         await indexnow.verify_key_file(http, HOST, KEY)
 
@@ -37,6 +37,7 @@ async def test_key_file_must_be_reachable_and_contain_key() -> None:
     [
         (httpx.Response(404), "not reachable"),
         (httpx.Response(200, text="wrong"), "does not contain"),
+        (httpx.Response(200, text=f"{KEY}\n"), "does not contain"),
     ],
 )
 async def test_bad_key_file_is_clear(response: httpx.Response, message: str) -> None:
@@ -86,6 +87,37 @@ async def test_subpath_key_only_authorizes_urls_below_subpath() -> None:
 
 
 @pytest.mark.parametrize(
+    "url",
+    [
+        f"https://{HOST}/news/../admin",
+        f"https://{HOST}/news/%2e%2e/admin",
+        f"https://{HOST}/news%2f..%2fadmin",
+    ],
+)
+def test_subpath_key_rejects_ambiguous_dot_segments(url: str) -> None:
+    location = f"https://{HOST}/news/{KEY}.txt"
+    with pytest.raises(InvalidRequest, match="dot segments"):
+        indexnow.validate_urls(HOST, KEY, [url], location)
+
+
+async def test_key_file_redirect_is_not_followed() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            302,
+            headers={"Location": "https://internal.example/key.txt"},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(InvalidRequest, match="HTTP 302"):
+            await indexnow.verify_key_file(http, HOST, KEY)
+    assert calls == [indexnow.key_location(HOST, KEY)]
+
+
+@pytest.mark.parametrize(
     ("status", "expected"),
     [(200, "received"), (202, "accepted")],
 )
@@ -120,7 +152,20 @@ async def test_verify_happens_before_submission() -> None:
     assert calls == [indexnow.key_location(HOST, KEY)]
 
 
-@pytest.mark.parametrize("host", ["[abc", "a b.example", "a.example:8080", "-bad.example", ""])
+@pytest.mark.parametrize(
+    "host",
+    [
+        "[abc",
+        "a b.example",
+        "a.example:8080",
+        "-bad.example",
+        "",
+        "localhost",
+        "internal",
+        "127.0.0.1",
+        "0",
+    ],
+)
 def test_unusable_indexnow_hosts_raise_a_public_error(host: str) -> None:
     with pytest.raises(InvalidRequest):
         indexnow.validate_host(host)
@@ -131,3 +176,26 @@ def test_unparsable_key_location_and_urls_stay_in_the_taxonomy() -> None:
         indexnow.validate_key_location(HOST, KEY, "https://[abc")
     with pytest.raises(InvalidRequest):
         indexnow.validate_urls(HOST, KEY, ["https://[abc"])
+    with pytest.raises(InvalidRequest, match="percent-encoding"):
+        indexnow.validate_urls(HOST, KEY, [f"https://{HOST}/bad%zz"])
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        f"https://{HOST}:8443/{KEY}.txt",
+        f"https://{HOST}/{KEY}.txt?download=1",
+        f"https://{HOST}/{KEY}.txt#fragment",
+        f"https://:password@{HOST}/{KEY}.txt",
+    ],
+)
+def test_key_location_is_an_exact_public_https_resource(location: str) -> None:
+    with pytest.raises(InvalidRequest, match="keyLocation"):
+        indexnow.validate_key_location(HOST, KEY, location)
+
+
+async def test_oversized_key_file_is_rejected_without_buffering_the_rest() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"x" * 1024))
+    async with httpx.AsyncClient(transport=transport) as http:
+        with pytest.raises(InvalidRequest, match="does not contain"):
+            await indexnow.verify_key_file(http, HOST, KEY)

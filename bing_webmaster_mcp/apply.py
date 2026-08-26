@@ -26,7 +26,8 @@ async def apply_plan(
     limiter: RateLimiter,
     indexnow_transport: httpx.AsyncBaseTransport | None = None,
 ) -> dict[str, Any]:
-    with store.applying(plan_id) as plan:
+    with store.applying(plan_id) as lease:
+        plan = lease.plan
         prepared = prepare_write(plan.operation, plan.args)
         if prepared.method != "IndexNow" and client is None:
             raise RuntimeError("a Bing client is required to apply this plan")
@@ -87,7 +88,11 @@ async def apply_plan(
                     mutating=True,
                 )
         except PlanUnknownOutcome as exc:
-            store.mark_unknown(plan_id)
+            try:
+                store.mark_unknown(plan_id)
+            except BaseException:
+                lease.preserve_lock()
+                raise
             audit.record("plan_apply_unknown", plan_id=plan_id, error=exc.to_dict())
             raise
         except BingWebmasterError as exc:
@@ -100,7 +105,11 @@ async def apply_plan(
             # Ctrl-C or any other interruption once dispatch has begun: the lock is
             # released by the context manager, so a plan left pending would invite a
             # retry of a write that may already have been sent.
-            store.mark_unknown(plan_id)
+            try:
+                store.mark_unknown(plan_id)
+            except BaseException:
+                lease.preserve_lock()
+                raise
             audit.record(
                 "plan_apply_unknown",
                 plan_id=plan_id,
@@ -108,7 +117,11 @@ async def apply_plan(
             )
             raise
 
-        store.mark_applied(plan_id)
+        try:
+            store.mark_applied(plan_id)
+        except BaseException:
+            lease.preserve_lock()
+            raise
         audit.record("plan_apply_succeeded", plan_id=plan_id)
         return {
             "applied": True,

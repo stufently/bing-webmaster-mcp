@@ -101,4 +101,10 @@ callers must not invent enum names.
 `SubmitContent` takes an RFC-style HTTP response and structured data as base64 strings;
 `dynamicServing` is an integer from 0 through 5. `SubmitUrlBatch` has a documented
 per-call cap of 500 and must also fit the live quota returned by
-`GetUrlSubmissionQuota`.
+`GetUrlSubmissionQuota`. Microsoft documents a 10 MB uncompressed content payload limit
+per `SubmitContent` request; the combined decoded `httpMessage` and `structuredData`
+must fit it.
+
+Microsoft's `AddSiteRoles` JSON example pairs `siteUrl: http://example.com` with
+`delegatedUrl: http://host1.example.com`. The delegated URL is therefore validated as
+absolute but is not restricted to the site's exact host.

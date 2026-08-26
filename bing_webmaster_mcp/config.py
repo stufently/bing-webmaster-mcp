@@ -10,6 +10,7 @@ from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 
 from .errors import AuthFailed, InvalidRequest, PolicyDenied
+from .urls import ensure_unambiguous_path, normalise_hostname
 
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
@@ -66,9 +67,9 @@ class Settings(BaseSettings):
         return settings
 
     def check_site_allowed(self, site_url: str) -> None:
-        key = _policy_key(site_url)
+        key = _policy_key(site_url, strict=True)
         if key is None:
-            return
+            raise InvalidRequest(f"invalid site URL for policy check: {site_url!r}")
         host, path = key
         for denied in self.denied_sites:
             entry = _policy_key(denied)
@@ -82,7 +83,7 @@ class Settings(BaseSettings):
                 )
 
 
-def _policy_key(site_url: str) -> tuple[str, str] | None:
+def _policy_key(site_url: str, *, strict: bool = False) -> tuple[str, str] | None:
     """Reduce a site to the (host, path) pair the denylist matches on.
 
     Matching on the raw string lets http/https, an explicit :443, a trailing dot or a
@@ -99,13 +100,18 @@ def _policy_key(site_url: str) -> tuple[str, str] | None:
     try:
         parsed = urlsplit(candidate)
         host, port = parsed.hostname, parsed.port
+        if host:
+            host = normalise_hostname(host, "site policy")
+        ensure_unambiguous_path(parsed.path, "site URL")
+    except InvalidRequest:
+        if strict:
+            raise
+        return None
     except ValueError:
+        if strict:
+            raise InvalidRequest(f"invalid site URL for policy check: {site_url!r}") from None
         return None
     if not host:
-        return None
-    host = host.rstrip(".").casefold()
-    if not host:
-        # "." and "..." parse to a hostname that normalises away entirely.
         return None
     authority = host if port in (None, 80, 443) else f"{host}:{port}"
     return authority, parsed.path.rstrip("/")
