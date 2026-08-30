@@ -12,7 +12,7 @@ from .config import Settings
 from .errors import BingWebmasterError, PlanUnknownOutcome
 from .limits import RateLimiter
 from .ops import indexnow
-from .plans import PlanStore
+from .plans import PlanStore, create_write_plan
 from .writes import prepare_write
 
 
@@ -129,3 +129,65 @@ async def apply_plan(
             "operation": plan.operation,
             "result": result,
         }
+
+
+async def execute_write(
+    operation: str,
+    args: dict[str, Any],
+    *,
+    settings: Settings,
+    client: BingClient | None,
+    audit: AuditLog,
+    limiter: RateLimiter,
+    indexnow_transport: httpx.AsyncBaseTransport | None = None,
+) -> dict[str, Any]:
+    """Record a plan and apply it in the same call.
+
+    The one-step path is not a second write implementation: it still creates the durable
+    plan record and then goes through ``apply_plan``, so the denylist, Bing's own
+    submission quota, the local daily ceiling, one-shot application and the audit trail
+    are exactly the ones the reviewed path uses. What it drops is the human between the
+    two steps, which is what ``BING_WM_ALLOW_WRITES`` decides.
+    """
+    settings.check_writes_allowed()
+    store = PlanStore(settings.state_dir, settings.plan_ttl_seconds)
+    plan = await create_write_plan(operation, args, settings=settings, client=client)
+    try:
+        return await apply_plan(
+            plan.plan_id,
+            settings=settings,
+            store=store,
+            client=client,
+            audit=audit,
+            limiter=limiter,
+            indexnow_transport=indexnow_transport,
+        )
+    except BingWebmasterError as exc:
+        _close_out(store, plan.plan_id, audit)
+        # Whatever went wrong, the caller has to be able to find the record: for an
+        # unknown outcome the plan id is the only way to tell which write to check
+        # against Bing.
+        exc.details = {**(exc.details or {}), "plan_id": plan.plan_id}
+        raise
+    except BaseException:
+        _close_out(store, plan.plan_id, audit)
+        raise
+
+
+def _close_out(store: PlanStore, plan_id: str, audit: AuditLog) -> None:
+    """Refuse a one-step plan whose write never happened.
+
+    Nobody is coming back to it. Left pending it would stay applicable by hand for a
+    whole TTL, which would send a change no human ever reviewed. A plan the apply
+    boundary already made terminal - applied, or an unknown outcome - keeps exactly the
+    state it recorded, and a failure to clean up never masks the original error.
+    """
+    try:
+        if store.get(plan_id).state != "pending":
+            return
+        store.reject(plan_id)
+        audit.record("plan_discarded", plan_id=plan_id, reason="one_step_write_failed")
+    except BingWebmasterError:
+        return
+    except OSError:
+        return

@@ -16,8 +16,8 @@ An MCP server and CLI over the **Bing Webmaster Tools API**, plus first-class
 
 One sentence for the README and for anything that quotes it: *bing-webmaster-mcp
 gives an AI agent read access to what Bing knows about your sites — traffic,
-indexing, crawl issues, inbound links, keywords — and a reviewed, two-step path
-for the operations that change something.*
+indexing, crawl issues, inbound links, keywords — and a write path you choose:
+direct by default, or reviewed plan-and-apply.*
 
 ### Why it exists
 
@@ -46,9 +46,10 @@ define what this one has to do better.
 
 The three openings, in priority order:
 
-1. **A review gate on every mutating call.** Neither competitor has one. Every
-   write here goes through plan-and-apply (§6). This is the main differentiator
-   and the main reason the project is worth existing.
+1. **A review gate available on every mutating call.** Neither competitor has
+   one. `BING_WM_ALLOW_WRITES=false` routes every write through plan-and-apply
+   (§6). It is off by default — an operator who wants the gate opts into it —
+   but the gate itself remains the main differentiator.
 2. **First-class, protocol-correct IndexNow** (§8) — batch, key-file handling,
    fan-out to all participating engines, honest response-code mapping.
 3. **Complete Bing coverage in a focused server**, rather than Bing as an
@@ -220,30 +221,52 @@ Treat codes as a public contract: renaming one is a breaking change.
 
 ---
 
-## 6. Plan-and-apply — the security boundary
+## 6. The write boundary — `BING_WM_ALLOW_WRITES`
 
-Every write in §4, plus IndexNow submission, is split in two:
+Every write in §4, plus IndexNow submission, takes one of two paths. A single
+boolean setting picks which, and which MCP tools are advertised.
 
-1. `plan_<operation>` validates arguments, resolves the target site, checks quota
-   where relevant, records the intent, and returns `plan_id` + a human-readable
-   `summary`. **Nothing is sent.**
+**`true` (default) — direct.** One `bing_<operation>` MCP tool per write, and
+`bing-wm write` plus its shortcuts on the CLI. The change reaches Bing on the
+first call, with no separate approval.
+
+**`false` — reviewed.** The write is split in two:
+
+1. `bing_plan_<operation>` validates arguments, resolves the target site, checks
+   quota where relevant, records the intent, and returns `plan_id` + a
+   human-readable `summary`. **No change is sent** — planning a quota-aware write
+   does read Bing's quota, and nothing else reaches Bing.
 2. `bing-wm plan apply <plan_id>` executes it — CLI only, with a confirmation
    prompt unless `--yes`.
 
-**There is no MCP tool that applies a plan.** State the reasoning in the README in
-one line: a confirmation an agent can send over MCP is a confirmation that prompt
-injection can send.
+A direct write is not a second write implementation. It records the same durable
+plan and goes through the same apply boundary; the setting removes the human
+between the two steps and nothing else. Every control below holds on both paths.
+
+**No MCP tool accepts a plan ID, in either mode**, so none can apply or reject a
+plan recorded for review. A direct write applies the plan it creates within the
+same call. Enabling direct writes replaces the planning tools rather than adding a
+tool that can confirm a plan somebody else wrote. State the reasoning in the README: a
+confirmation an agent can send over MCP is a confirmation that prompt injection
+can send — which is also why the README tells an unsure operator to choose
+`false`, and why the planning path stays available while direct writes are on.
 
 Be honest about the limit, the way `telegram-ai-cli` is: an MCP client that also
 has a shell (Claude Code, Codex) can run `plan apply` itself. The design does not
-prevent that. What it buys is that the write leaves a plan record, an audit entry
-and a rendered summary a human can read, instead of happening invisibly inside a
-tool call. Compensating controls: full audit log of attempt and outcome,
-restart-persistent rate limits, and a config denylist of sites that can never be
-mutated.
+prevent that. What the reviewed path buys is that the write leaves a plan record,
+an audit entry and a rendered summary a human can read, instead of happening
+invisibly inside a tool call. Compensating controls on both paths: full audit log
+of attempt and outcome, restart-persistent rate limits, and a config denylist of
+sites that can never be mutated.
 
 Plans expire — default 15 minutes, configurable. An expired plan cannot be
-applied. Applying twice must fail on the second attempt, not submit twice.
+applied. Applying twice must fail on the second attempt, not submit twice. A
+direct write creates and applies its plan in the same call, so its TTL never
+matters.
+
+`allow_writes` is re-read where the write executes, not only where a tool is
+advertised: an MCP client may hold a tool list from before the setting changed,
+and that call must be refused with `POLICY_DENIED`.
 
 ---
 
@@ -273,6 +296,13 @@ bing-wm keywords related <keyword> …
 bing-wm sitemaps list <site>
 bing-wm quota <site>
 
+bing-wm write <operation> --args-json '{…}'
+bing-wm submit-url <site> <url>
+bing-wm submit-urls <site> --file urls.txt
+bing-wm submit-sitemap <site> <feed-url>
+bing-wm block-url <site> <url> …
+bing-wm indexnow submit <host> --file urls.txt --key <key>
+
 bing-wm plan submit-url <site> <url>
 bing-wm plan submit-urls <site> --file urls.txt
 bing-wm plan submit-sitemap <site> <feed-url>
@@ -280,6 +310,9 @@ bing-wm plan block-url <site> <url> …
 bing-wm plan indexnow <host> --file urls.txt
 bing-wm plan list | show <id> | apply <id> [--yes] | reject <id>
 ```
+
+The one-step commands above the blank line require `BING_WM_ALLOW_WRITES`; the
+plan commands work in both modes.
 
 MCP tools: `bing_sites_list`, `bing_site_roles`, `bing_traffic_queries`,
 `bing_traffic_pages`, `bing_traffic_query`, `bing_traffic_page`,
@@ -291,8 +324,9 @@ MCP tools: `bing_sites_list`, `bing_site_roles`, `bing_traffic_queries`,
 `bing_query_parameters`, `bing_geo_settings`, `bing_page_preview_blocks`,
 `bing_deep_link_blocks`, `bing_site_moves`, `bing_fetched_urls`,
 `bing_submission_quota`, `bing_content_submission_quota`,
-plus one `bing_plan_<operation>` per write, plus `bing_plan_list` and
-`bing_plan_show`. No `bing_plan_apply`.
+plus one write tool per operation — `bing_<operation>` when
+`BING_WM_ALLOW_WRITES` is on, `bing_plan_<operation>` when it is off — plus
+`bing_plan_list` and `bing_plan_show`. No `bing_plan_apply` in either mode.
 
 Tool descriptions are part of the prompt the model reads. Write them as
 instructions to the model, not as API docs, and say what a tool must **not** be

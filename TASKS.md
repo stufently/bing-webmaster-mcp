@@ -3,6 +3,20 @@
 The implementation is complete in the checkout. These steps require the repository
 owner's external accounts and are intentionally not automated from a developer machine.
 
+## In progress
+
+- [ ] 2026-08-30 — `BING_WM_ALLOW_WRITES` write-path switch: code, tests and docs are
+  done and green. Remaining: rebuild the local `bing-webmaster-mcp:local` image so the
+  Claude and Codex MCP entries pick the change up.
+
+## Open follow-up
+
+- [ ] Idempotency key for one-step writes. Raised in the 2026-08-30 Codex review: with
+  `BING_WM_ALLOW_WRITES=true`, a retry after a lost response records a new plan and
+  sends the write again, because the one-shot guarantee is per plan. A client-supplied
+  key with a durable mapping to a plan and its result would close it. Deliberately
+  deferred and recorded in `docs/product-boundaries.md`.
+
 ## First PyPI release
 
 - [ ] On PyPI, register a pending Trusted Publisher for project

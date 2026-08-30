@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     max_attempts: int = Field(default=3, ge=1, le=10)
     plan_ttl_seconds: int = Field(default=900, gt=0)
     state_dir: Path = Field(default_factory=_default_state_dir)
+    allow_writes: bool = True
     denied_sites: tuple[str, ...] = ()
     max_writes_per_day: int | None = Field(default=None, gt=0)
     http_host: str = "127.0.0.1"
@@ -65,6 +66,22 @@ class Settings(BaseSettings):
                 suggestion="create a key in Bing Webmaster Tools -> Settings -> API Access",
             )
         return settings
+
+    def check_writes_allowed(self) -> None:
+        """Refuse a direct write when the operator has turned the write path off.
+
+        This is the only switch between the one-step path and the reviewed one. It is
+        checked again inside the apply boundary rather than only where a tool is
+        advertised: an MCP client may hold a tool list from before the setting changed.
+        """
+        if not self.allow_writes:
+            raise PolicyDenied(
+                "writing to Bing is disabled by BING_WM_ALLOW_WRITES=false",
+                suggestion=(
+                    "plan the change instead and apply it with `bing-wm plan apply`, "
+                    "or set BING_WM_ALLOW_WRITES=true"
+                ),
+            )
 
     def check_site_allowed(self, site_url: str) -> None:
         key = _policy_key(site_url, strict=True)

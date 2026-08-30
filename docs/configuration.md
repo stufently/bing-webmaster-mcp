@@ -11,11 +11,22 @@ to plans or audit entries.
 | `BING_WM_MAX_ATTEMPTS` | `3` | attempts for retryable safe reads; writes never auto-retry |
 | `BING_WM_PLAN_TTL_SECONDS` | `900` | seconds before a plan expires |
 | `BING_WM_STATE_DIR` | user state directory | plans, audit log, and local counters |
+| `BING_WM_ALLOW_WRITES` | `true` | `false` removes every one-step write and leaves only the reviewed plan path |
 | `BING_WM_DENIED_SITES` | `[]` | JSON list of sites that may never be mutated |
 | `BING_WM_MAX_WRITES_PER_DAY` | unset | optional operator local ceiling |
 | `BING_WM_HTTP_HOST` | `127.0.0.1` | literal loopback bind address |
 | `BING_WM_HTTP_PORT` | `8765` | optional HTTP port |
 | `BING_WM_HTTP_BEARER_TOKEN` | unset | required for HTTP; at least 32 characters |
+
+`BING_WM_ALLOW_WRITES` is the switch between the two write paths. On, the MCP server
+advertises one-step `bing_<operation>` tools and the CLI accepts `bing-wm write` and its
+shortcuts; the change reaches Bing on the first call. Off, the server advertises
+`bing_plan_<operation>` instead, which sends nothing, and the change reaches Bing only
+when a human runs `bing-wm plan apply`. Set it to `false` if an agent using this server
+also reads pages, anchor text, or crawl issues written by strangers: a confirmation an
+agent can send is a confirmation prompt injection can send. Everything else — the
+denylist, Bing's own quota check, `BING_WM_MAX_WRITES_PER_DAY`, one-shot application and
+the audit trail — applies to both paths.
 
 Denylist matching is on the parsed host, so `http://`, an explicit `:443`, a trailing
 dot, and a change of case all match the same entry. Entries may be written as a URL or

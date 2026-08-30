@@ -14,6 +14,17 @@ accept `--json`; lists render as human-readable tables otherwise.
 - `bing-wm sitemaps list|details`
 - `bing-wm quota`, `content-quota`, `blocking`, `query-parameters`, `geo-settings`
 - `bing-wm indexnow key`
+
+One-step writes, available while `BING_WM_ALLOW_WRITES` is on (the default). They send
+the change immediately and print the applied plan:
+
+- `bing-wm submit-url|submit-urls|submit-sitemap|block-url`
+- `bing-wm indexnow submit`
+- `bing-wm write OPERATION --args-json OBJECT` covers every write below.
+
+The reviewed path stays available in both modes and is the only path when
+`BING_WM_ALLOW_WRITES=false`:
+
 - `bing-wm plan submit-url|submit-urls|submit-sitemap|block-url|indexnow`
 - `bing-wm plan create OPERATION --args-json OBJECT` covers every write below.
 - `bing-wm plan list|show|reject|apply|unlock`; apply and unlock prompt unless `--yes`
@@ -36,9 +47,48 @@ accept `--json`; lists render as human-readable tables otherwise.
 - `bing_link_counts`, `bing_url_links`, `bing_connected_pages`
 - `bing_keyword`, `bing_keyword_stats`, `bing_related_keywords`
 
-## MCP planning tools
+## MCP write tools
 
-Each sends nothing and returns a plan ID, summary, expiry, and CLI apply command.
+`BING_WM_ALLOW_WRITES` decides which of the two sets below is advertised. Both are
+always dispatchable, so a client holding a stale tool list gets the operation's real
+answer — a `POLICY_DENIED` for a disabled write — rather than "unknown tool".
+
+## MCP one-step write tools (`BING_WM_ALLOW_WRITES=true`, the default)
+
+Each sends the change to Bing immediately and returns the applied plan ID, the operation
+and Bing's result. They are annotated `readOnlyHint: false`, `destructiveHint: true`.
+
+- `bing_add_blocked_url`
+- `bing_add_connected_page`
+- `bing_add_country_region_settings`
+- `bing_add_deep_link_block`
+- `bing_add_page_preview_block`
+- `bing_add_query_parameter`
+- `bing_add_site`
+- `bing_add_site_roles`
+- `bing_enable_disable_query_parameter`
+- `bing_fetch_url`
+- `bing_indexnow_submit`
+- `bing_remove_blocked_url`
+- `bing_remove_country_region_settings`
+- `bing_remove_deep_link_block`
+- `bing_remove_feed`
+- `bing_remove_page_preview_block`
+- `bing_remove_query_parameter`
+- `bing_remove_site`
+- `bing_remove_site_role`
+- `bing_save_crawl_settings`
+- `bing_submit_content`
+- `bing_submit_feed`
+- `bing_submit_site_move`
+- `bing_submit_url`
+- `bing_submit_url_batch`
+- `bing_verify_site`
+
+## MCP planning tools (`BING_WM_ALLOW_WRITES=false`)
+
+Each returns a plan ID, summary, expiry, and CLI apply command. No change is sent to
+Bing; planning a quota-aware write does read Bing's quota.
 
 - `bing_plan_add_blocked_url`
 - `bing_plan_add_connected_page`
@@ -68,11 +118,19 @@ Each sends nothing and returns a plan ID, summary, expiry, and CLI apply command
 - `bing_plan_verify_site`
 - `bing_plan_list`, `bing_plan_show`
 
-There is no `bing_plan_apply` or `bing_plan_reject` tool.
+There is no `bing_plan_apply` or `bing_plan_reject` tool in either mode, and no MCP tool
+accepts a plan ID: a plan recorded for review is applied or refused by a human at the
+CLI. A direct write applies the plan it creates in the same call. Enabling one-step
+writes replaces the planning tools with direct ones rather than adding a tool that can
+confirm a plan somebody else wrote.
+
+A direct write is not idempotent. Retrying one creates a new plan and sends the change
+again; the one-shot guarantee is per plan, and there is no client-supplied idempotency
+key. Before repeating a call whose response was lost, read `audit.jsonl` or `bing_plan_list`.
 
 ## Write operation names
 
-The generic planner accepts `add_blocked_url`, `add_connected_page`,
+`bing-wm write` and `bing-wm plan create` both accept `add_blocked_url`, `add_connected_page`,
 `add_country_region_settings`, `add_deep_link_block`, `add_page_preview_block`,
 `add_query_parameter`, `add_site`, `add_site_roles`,
 `enable_disable_query_parameter`, `fetch_url`, `indexnow_submit`,
@@ -89,6 +147,11 @@ restricted to `site_url`'s host. Microsoft's JSON example delegates `example.com
 `host1.example.com`, so a cross-host value is part of the documented operation shape.
 
 ## State, audit, and recovery
+
+A one-step write is not a second write implementation: it records the same durable plan
+and then goes through the same apply boundary, so the denylist, Bing's own submission
+quota, the local daily ceiling, one-shot application and the audit trail are identical.
+The only thing `BING_WM_ALLOW_WRITES` removes is the human between the two steps.
 
 Plan files are mode `0600` under a mode `0700` directory. Plans expire after 15 minutes
 by default and move to terminal `applied`, `rejected`, or `unknown_outcome` states.

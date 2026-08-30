@@ -12,7 +12,7 @@ from typing import Any
 
 import click
 
-from .apply import apply_plan
+from .apply import apply_plan, execute_write
 from .audit import AuditLog
 from .client import BingClient
 from .config import Settings
@@ -130,6 +130,39 @@ async def _create_plan(operation: str, args: dict[str, Any]) -> Plan:
         return await create_write_plan(operation, args, settings=settings, client=None)
     async with BingClient(settings, transport=_transport()) as client:
         return await create_write_plan(operation, args, settings=settings, client=client)
+
+
+async def _write_now(operation: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Create and apply a plan in one command.
+
+    The plan record, the audit trail and every limit still apply; what BING_WM_ALLOW_WRITES
+    removes is the separate human approval between the two steps.
+    """
+    # Policy first: a disabled write path must say so even when no API key is set.
+    _load_settings(require_api_key=False).check_writes_allowed()
+    settings = _load_settings(require_api_key=operation != "indexnow_submit")
+    audit = AuditLog(settings.state_dir)
+    limiter = RateLimiter(settings.state_dir, max_per_day=settings.max_writes_per_day)
+    if operation == "indexnow_submit":
+        return await execute_write(
+            operation,
+            args,
+            settings=settings,
+            client=None,
+            audit=audit,
+            limiter=limiter,
+            indexnow_transport=_transport(),
+        )
+    async with BingClient(settings, transport=_transport()) as client:
+        return await execute_write(
+            operation,
+            args,
+            settings=settings,
+            client=client,
+            audit=audit,
+            limiter=limiter,
+            indexnow_transport=_transport(),
+        )
 
 
 def _plan_payload(plan: Plan) -> dict[str, Any]:
@@ -536,7 +569,7 @@ def content_quota(site: str, as_json: bool) -> None:
 
 @main.group("indexnow")
 def indexnow_group() -> None:
-    """IndexNow key utilities. Submission itself still uses a plan."""
+    """IndexNow key generation and submission."""
 
 
 @indexnow_group.command("key")
@@ -546,6 +579,97 @@ def indexnow_group() -> None:
 def indexnow_key(host: str, as_json: bool) -> None:
     key = indexnow.generate_key()
     emit({"key": key, "key_location": indexnow.key_location(host, key)}, as_json)
+
+
+@indexnow_group.command("submit")
+@click.argument("host")
+@click.option("--file", "path", required=True, type=click.Path(path_type=Path, exists=True))
+@click.option("--key", required=True)
+@click.option("--key-location")
+@json_option
+@guarded
+def indexnow_submit(
+    host: str, path: Path, key: str, key_location: str | None, as_json: bool
+) -> None:
+    """Submit a URL batch to IndexNow now. Needs BING_WM_ALLOW_WRITES."""
+    args: dict[str, Any] = {"host": host, "key": key, "url_list": _read_lines(path)}
+    if key_location:
+        args["key_location"] = key_location
+    emit(run_async(_write_now("indexnow_submit", args)), as_json)
+
+
+def _read_lines(path: Path) -> list[str]:
+    values = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+    if not values:
+        raise InvalidRequest(f"{path} contains no URLs")
+    return values
+
+
+def _args_object(args_json: str) -> dict[str, Any]:
+    try:
+        args = json.loads(args_json)
+    except json.JSONDecodeError as exc:
+        raise InvalidRequest(f"--args-json is not valid JSON: {exc}") from exc
+    if not isinstance(args, dict):
+        raise InvalidRequest("--args-json must contain an object")
+    return args
+
+
+@main.command("write")
+@click.argument("operation", type=click.Choice(sorted(WRITE_OPS)))
+@click.option("--args-json", required=True, help="Operation arguments as a JSON object.")
+@json_option
+@guarded
+def write(operation: str, args_json: str, as_json: bool) -> None:
+    """Send any supported write to Bing now. Needs BING_WM_ALLOW_WRITES."""
+    emit(run_async(_write_now(operation, _args_object(args_json))), as_json)
+
+
+@main.command("submit-url")
+@click.argument("site")
+@click.argument("url")
+@json_option
+@guarded
+def submit_url(site: str, url: str, as_json: bool) -> None:
+    """Submit one URL to Bing now. Needs BING_WM_ALLOW_WRITES."""
+    emit(run_async(_write_now("submit_url", {"site_url": site, "url": url})), as_json)
+
+
+@main.command("submit-urls")
+@click.argument("site")
+@click.option("--file", "path", required=True, type=click.Path(path_type=Path, exists=True))
+@json_option
+@guarded
+def submit_urls(site: str, path: Path, as_json: bool) -> None:
+    """Submit a newline-delimited file of URLs now. Needs BING_WM_ALLOW_WRITES."""
+    args = {"site_url": site, "url_list": _read_lines(path)}
+    emit(run_async(_write_now("submit_url_batch", args)), as_json)
+
+
+@main.command("submit-sitemap")
+@click.argument("site")
+@click.argument("feed_url")
+@json_option
+@guarded
+def submit_sitemap(site: str, feed_url: str, as_json: bool) -> None:
+    """Submit a sitemap now. Needs BING_WM_ALLOW_WRITES."""
+    emit(run_async(_write_now("submit_feed", {"site_url": site, "feed_url": feed_url})), as_json)
+
+
+@main.command("block-url")
+@click.argument("site")
+@click.argument("url")
+@click.option("--entity-type", required=True, type=int)
+@click.option("--request-type", required=True, type=int)
+@json_option
+@guarded
+def block_url(site: str, url: str, entity_type: int, request_type: int, as_json: bool) -> None:
+    """Block a URL or directory now. Needs BING_WM_ALLOW_WRITES."""
+    args = {
+        "site_url": site,
+        "blocked_url": {"Url": url, "EntityType": entity_type, "RequestType": request_type},
+    }
+    emit(run_async(_write_now("add_blocked_url", args)), as_json)
 
 
 @main.group("plan")
@@ -559,13 +683,7 @@ def plan_group() -> None:
 @json_option
 @guarded
 def plan_create(operation: str, args_json: str, as_json: bool) -> None:
-    try:
-        args = json.loads(args_json)
-    except json.JSONDecodeError as exc:
-        raise InvalidRequest(f"--args-json is not valid JSON: {exc}") from exc
-    if not isinstance(args, dict):
-        raise InvalidRequest("--args-json must contain an object")
-    emit(_plan_payload(run_async(_create_plan(operation, args))), as_json)
+    emit(_plan_payload(run_async(_create_plan(operation, _args_object(args_json)))), as_json)
 
 
 @plan_group.command("submit-url")
@@ -576,13 +694,6 @@ def plan_create(operation: str, args_json: str, as_json: bool) -> None:
 def plan_submit_url(site: str, url: str, as_json: bool) -> None:
     plan = run_async(_create_plan("submit_url", {"site_url": site, "url": url}))
     emit(_plan_payload(plan), as_json)
-
-
-def _read_lines(path: Path) -> list[str]:
-    values = [line.strip() for line in path.read_text().splitlines() if line.strip()]
-    if not values:
-        raise InvalidRequest(f"{path} contains no URLs")
-    return values
 
 
 @plan_group.command("submit-urls")

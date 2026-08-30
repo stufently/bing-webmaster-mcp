@@ -2,15 +2,45 @@
 
 <!-- mcp-name: io.github.stufently/bing-webmaster-mcp -->
 
-bing-webmaster-mcp gives an AI agent read access to what Bing knows about your sites — traffic, indexing, crawl issues, inbound links, keywords — and a reviewed, two-step path for the operations that change something.
+bing-webmaster-mcp gives an AI agent read access to what Bing knows about your sites — traffic, indexing, crawl issues, inbound links, keywords — and a write path you choose: direct by default, or reviewed plan-and-apply.
 
 It ships a Python 3.12+ CLI and MCP server for the JSON Bing Webmaster Tools API,
 plus protocol-correct IndexNow submission. SOAP and POX are deliberately absent.
 
-## Why the write path has two steps
+## Choosing a write path
 
-Read tools execute immediately. Every operation that changes Bing state creates a
-durable plan first:
+Read tools always execute immediately. For everything that changes Bing state, one
+setting picks between two paths:
+
+```console
+export BING_WM_ALLOW_WRITES=true    # default: writes go straight through
+export BING_WM_ALLOW_WRITES=false   # writes are planned and applied by a human
+```
+
+**If you are not sure, set it to `false`.** The default is convenience; `false` is the
+safe answer, and here is the reason. An agent using this server also reads pages, anchor
+text, crawl issues and search queries written by strangers. A confirmation an agent can
+send is a confirmation prompt injection can send, so as long as the agent can write, a
+poisoned string in someone else's anchor text can reach your Bing account. With
+`false`, nothing an agent does changes Bing until you have read the plan and run
+`bing-wm plan apply` yourself.
+
+### Direct writes (default)
+
+The MCP server advertises one-step `bing_<operation>` tools, and the CLI accepts:
+
+```console
+$ bing-wm submit-url example.com https://example.com/new-page --json
+{"applied": true, "plan_id": "…", "operation": "submit_url", "result": null}
+```
+
+A direct write is not idempotent: retrying one records a new plan and sends the change
+again. If a response is lost, read `audit.jsonl` or `bing-wm plan list` before repeating
+the call.
+
+### Reviewed writes (`BING_WM_ALLOW_WRITES=false`)
+
+The server advertises `bing_plan_<operation>` instead. Those tools send nothing:
 
 ```console
 $ bing-wm plan submit-url example.com https://example.com/new-page --json
@@ -23,11 +53,18 @@ $ bing-wm plan apply PLAN_ID
 Apply this plan? [y/N]: y
 ```
 
-There is deliberately no apply tool over MCP: a confirmation an agent can send is a
-confirmation prompt injection can send. An MCP client that also has shell access can
-still invoke the CLI; the compensating controls are a readable plan, an append-only
-audit trail, one-shot application, expiry, a site denylist, and restart-persistent
-local limits.
+No MCP tool takes a plan ID, in either mode: a plan recorded for review is applied or
+rejected only at the CLI, by you. A direct write applies the plan it creates in the same
+call and never touches one somebody else recorded. The plan path stays available while
+direct writes are on, so an agent can still propose a change for review.
+
+### What both paths share
+
+A direct write is the same code with the human step removed: it records the same durable
+plan and goes through the same apply boundary. A readable plan record, an append-only
+audit trail, one-shot application, expiry, Bing's own submission quota, a site denylist
+(`BING_WM_DENIED_SITES`) and restart-persistent local limits
+(`BING_WM_MAX_WRITES_PER_DAY`) apply to both.
 
 If the applying process is killed and leaves a lock behind, the command
 `bing-wm plan unlock PLAN_ID` verifies that the recorded PID is gone before recovering
@@ -58,8 +95,10 @@ all settings.
 
 Run the stdio server with `bing-webmaster-mcp`. Point an MCP client at that executable
 and pass `BING_WM_API_KEY` through its protected environment configuration. The server
-exposes 34 read tools, a planning tool for every supported write, and plan inspection.
-It exposes no plan application or rejection tool.
+exposes 34 read tools, plan inspection, and one write tool per supported operation —
+direct `bing_<operation>` tools by default, or `bing_plan_<operation>` tools when
+`BING_WM_ALLOW_WRITES=false`. It exposes no plan application or rejection tool. Restart
+the server after changing the setting so the client refreshes its tool list.
 
 An optional Streamable HTTP entry point is also available:
 
@@ -80,7 +119,14 @@ bing-wm index url example.com https://example.com/page
 
 ### How do I submit URLs to Bing from the command line?
 
-Create a plan from one URL or a newline-delimited file, review it, then apply it:
+With writes enabled, from one URL or a newline-delimited file:
+
+```console
+bing-wm submit-url example.com https://example.com/page
+bing-wm submit-urls example.com --file PATH
+```
+
+With `BING_WM_ALLOW_WRITES=false`, create a plan, review it, then apply it:
 
 ```console
 bing-wm plan submit-url example.com https://example.com/page
@@ -98,15 +144,21 @@ Google does not participate in IndexNow. The live IndexNow registry currently li
 Bing, Yandex, Seznam, Naver, Yep, Internet Archive, and Amazonbot. Submission through
 `api.indexnow.org` fans out to participating engines.
 
-Generate a key, host the displayed UTF-8 key file, then plan a submission:
+Generate a key, host the displayed UTF-8 key file, then submit:
 
 ```console
 bing-wm indexnow key example.com
+bing-wm indexnow submit example.com --file PATH --key KEY
+```
+
+Or, with `BING_WM_ALLOW_WRITES=false`:
+
+```console
 bing-wm plan indexnow example.com --file PATH --key KEY
 bing-wm plan apply PLAN_ID
 ```
 
-The apply step checks the exact key-file URL without following redirects before it sends
+The submission checks the exact key-file URL without following redirects before it sends
 the batch. IndexNow hosts must use multi-label DNS names rather than IP literals or
 single-label names, and the key file must
 contain only the key. Batches above 10,000 URLs, ambiguous dot-segment paths, and URLs

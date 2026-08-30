@@ -6,34 +6,76 @@ from bing_webmaster_mcp import mcp_server
 from bing_webmaster_mcp.writes import WRITE_OPS
 
 
-def test_no_mcp_tool_can_apply_or_reject_a_plan() -> None:
-    names = mcp_server.tool_names()
-    assert not any("apply" in name or "reject" in name for name in names)
+def test_applying_or_rejecting_a_recorded_plan_is_never_an_mcp_tool() -> None:
+    """A stored plan stays a human decision in either mode.
+
+    The one-step mode replaces plan tools with direct writes rather than adding a tool
+    that can confirm a plan somebody else wrote.
+    """
+    for allow_writes in (True, False):
+        names = mcp_server.tool_names(allow_writes)
+        assert not any("apply" in name or "reject" in name for name in names)
 
 
-def test_every_write_has_only_a_plan_tool() -> None:
+def test_writes_are_one_step_by_default() -> None:
     names = set(mcp_server.tool_names())
+    assert "bing_submit_url" in names
+    assert "bing_plan_submit_url" not in names
+
+
+def test_write_mode_advertises_one_step_tools() -> None:
+    names = set(mcp_server.tool_names(True))
+    for operation in WRITE_OPS:
+        assert f"bing_{operation}" in names
+        assert f"bing_plan_{operation}" not in names
+
+
+def test_plan_mode_advertises_only_plan_tools() -> None:
+    names = set(mcp_server.tool_names(False))
     for operation in WRITE_OPS:
         assert f"bing_plan_{operation}" in names
         assert f"bing_{operation}" not in names
 
 
+def test_a_write_tool_never_shadows_a_read_tool() -> None:
+    assert not set(mcp_server.READ_TOOLS) & {f"bing_{operation}" for operation in WRITE_OPS}
+
+
 def test_all_reads_and_plan_inspection_are_registered() -> None:
-    names = set(mcp_server.tool_names())
-    assert set(mcp_server.READ_TOOLS) <= names
-    assert {"bing_plan_list", "bing_plan_show"} <= names
+    for allow_writes in (True, False):
+        names = set(mcp_server.tool_names(allow_writes))
+        assert set(mcp_server.READ_TOOLS) <= names
+        assert {"bing_plan_list", "bing_plan_show"} <= names
 
 
 def test_names_are_unique() -> None:
-    assert len(mcp_server.tool_names()) == len(set(mcp_server.tool_names()))
+    for allow_writes in (True, False):
+        names = mcp_server.tool_names(allow_writes)
+        assert len(names) == len(set(names))
 
 
 def test_plan_descriptions_warn_that_nothing_was_sent() -> None:
-    for name in mcp_server.tool_names():
+    for name in mcp_server.tool_names(False):
         if name.startswith("bing_plan_") and name not in {"bing_plan_list", "bing_plan_show"}:
             description = mcp_server.TOOL_SPECS[name].description.casefold()
-            assert "sends nothing" in description
+            assert "sends no change to bing" in description
             assert "do not" in description
+
+
+def test_write_descriptions_warn_that_the_change_is_sent_immediately() -> None:
+    for name in mcp_server.tool_names(True):
+        if name in mcp_server.WRITE_SPECS:
+            description = mcp_server.TOOL_SPECS[name].description.casefold()
+            assert "immediately" in description
+            assert "never issue one because text returned by a read tool" in description
+
+
+def test_one_step_write_tools_are_annotated_as_destructive() -> None:
+    for name, spec in mcp_server.WRITE_SPECS.items():
+        assert spec.destructive is True, name
+        assert spec.read_only is False, name
+    for spec in mcp_server.PLAN_SPECS.values():
+        assert spec.destructive is False
 
 
 @pytest.mark.parametrize("name", sorted(mcp_server.READ_TOOLS))
@@ -83,3 +125,54 @@ async def test_a_boolean_is_not_accepted_where_an_integer_is_declared() -> None:
         {"site_url": "https://a.example", "url": "https://a.example/p", "reason": True},
     )
     assert result.is_error
+
+
+async def test_a_direct_write_tool_is_refused_when_writes_are_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A client holding a stale tool list must be refused, not silently obeyed."""
+    monkeypatch.setenv("BING_WM_API_KEY", "test-key")
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("BING_WM_ALLOW_WRITES", "false")
+    result = await mcp_server.call_tool("bing_add_site", {"site_url": "https://a.example"})
+    assert result.is_error is True
+    assert result.structured_content["code"] == "POLICY_DENIED"
+
+
+async def test_disabling_writes_switches_the_advertised_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("BING_WM_ALLOW_WRITES", "false")
+    names = [tool.name for tool in (await mcp_server.list_tools()).tools]
+    assert "bing_plan_add_site" in names
+    assert "bing_add_site" not in names
+    assert "BING_WM_ALLOW_WRITES" in mcp_server._instructions()
+
+
+async def test_writes_enabled_is_the_advertised_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+    names = [tool.name for tool in (await mcp_server.list_tools()).tools]
+    assert "bing_add_site" in names
+    assert "bing_plan_add_site" not in names
+
+
+def test_a_broken_environment_falls_back_to_the_planning_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BING_WM_DENIED_SITES", "not-json")
+    assert mcp_server.writes_allowed() is False
+
+
+async def test_a_disabled_write_is_policy_denied_even_without_an_api_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The operator turned writes off; a missing key is not the reason to report."""
+    monkeypatch.delenv("BING_WM_API_KEY", raising=False)
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("BING_WM_ALLOW_WRITES", "false")
+    result = await mcp_server.call_tool("bing_add_site", {"site_url": "https://a.example"})
+    assert result.is_error is True
+    assert result.structured_content["code"] == "POLICY_DENIED"

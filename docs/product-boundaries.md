@@ -9,7 +9,12 @@ These are dated product decisions, not missing implementation work.
 - **2026-08-25 — no Google Search Console, GA4, or AdSense.** This is a focused Bing
   Webmaster implementation.
 - **2026-08-25 — no apply or reject tool over MCP.** Prompt injection must not present
-  its own approval as human review. Application remains a CLI operation.
+  its own approval as human review. No MCP tool accepts a plan ID, so a plan recorded
+  for review is applied or rejected only at the CLI.
+- **2026-08-30 — no idempotency key for one-step writes.** `BING_WM_ALLOW_WRITES=true`
+  makes a write repeatable by retrying the call: each retry records a new plan and sends
+  the change again. The one-shot guarantee is per plan. Operators who need
+  exactly-once semantics use the reviewed path, whose plan can only be applied once.
 - **2026-08-25 — no obsolete deep-link methods.** Microsoft marks
   `GetDeepLinkAlgoUrls`, `GetDeepLink`, and `UpdateDeepLink` obsolete.
 - **2026-08-25 — OAuth2 is designed for but not implemented.** API-key authentication

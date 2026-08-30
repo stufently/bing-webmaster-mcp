@@ -174,3 +174,62 @@ def test_plan_unlock_recovers_a_dead_apply_without_making_it_retryable(
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["state"] == "unknown_outcome"
     assert store.get(plan.plan_id).state == "unknown_outcome"
+
+
+def test_submit_url_sends_immediately(tmp_path, monkeypatch) -> None:
+    transport = bing_transport({"GetUrlSubmissionQuota": {"DailyQuota": 5}, "SubmitUrl": None})
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: transport)
+    result = CliRunner().invoke(
+        cli.main, ["submit-url", "a.example", "https://a.example/p", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["applied"] is True
+    assert payload["operation"] == "submit_url"
+    assert [request.url.path.rsplit("/", 1)[-1] for request in transport.calls] == [
+        "GetUrlSubmissionQuota",
+        "SubmitUrl",
+    ]
+
+
+def test_one_step_commands_are_refused_when_writes_are_disabled(tmp_path, monkeypatch) -> None:
+    settings = fake_settings(tmp_path, allow_writes=False)
+    transport = bing_transport({"AddSite": None})
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(cli, "_transport", lambda: transport)
+    args = ["write", "add_site", "--args-json", '{"site_url": "https://a.example"}', "--json"]
+    result = CliRunner().invoke(cli.main, args)
+    assert result.exit_code == 1
+    assert json.loads(result.output)["code"] == "POLICY_DENIED"
+    assert transport.calls == []
+
+
+def test_planning_still_works_while_writes_are_disabled(tmp_path, monkeypatch) -> None:
+    settings = fake_settings(tmp_path, allow_writes=False)
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(cli, "_transport", lambda: bing_transport({"AddSite": None}))
+    payload = '{"site_url": "https://a.example"}'
+    args = ["plan", "create", "add_site", "--args-json", payload, "--json"]
+    result = CliRunner().invoke(cli.main, args)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["plan_id"]
+
+
+def test_generic_write_rejects_a_non_object_payload(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: bing_transport({}))
+    result = CliRunner().invoke(cli.main, ["write", "add_site", "--args-json", "[]", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.output)["code"] == "INVALID_REQUEST"
+
+
+def test_a_disabled_write_is_policy_denied_even_without_an_api_key(tmp_path, monkeypatch) -> None:
+    settings = fake_settings(tmp_path, allow_writes=False, api_key=None)
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(cli, "_transport", lambda: bing_transport({}))
+    result = CliRunner().invoke(
+        cli.main, ["submit-url", "a.example", "https://a.example/p", "--json"]
+    )
+    assert result.exit_code == 1
+    assert json.loads(result.output)["code"] == "POLICY_DENIED"

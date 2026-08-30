@@ -8,7 +8,7 @@ import pytest
 from fakes import bing_transport, fake_settings
 from test_writes import sample_args
 
-from bing_webmaster_mcp.apply import apply_plan
+from bing_webmaster_mcp.apply import apply_plan, execute_write
 from bing_webmaster_mcp.audit import AuditLog
 from bing_webmaster_mcp.client import BingClient
 from bing_webmaster_mcp.errors import (
@@ -507,3 +507,131 @@ async def test_unknown_outcome_write_failure_keeps_the_apply_lock(tmp_path) -> N
 
     assert store.get(plan.plan_id).state == "pending"
     assert (tmp_path / "plans" / f"{plan.plan_id}.lock").exists()
+
+
+def _write_context(tmp_path, settings):
+    return AuditLog(settings.state_dir), RateLimiter(
+        settings.state_dir, max_per_day=settings.max_writes_per_day
+    )
+
+
+async def test_one_step_write_sends_the_change_and_records_an_applied_plan(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    audit, limiter = _write_context(tmp_path, settings)
+    transport = bing_transport({"AddSite": None})
+    async with BingClient(settings, transport=transport) as client:
+        result = await execute_write(
+            "add_site",
+            sample_args("add_site"),
+            settings=settings,
+            client=client,
+            audit=audit,
+            limiter=limiter,
+        )
+    assert result["applied"] is True
+    assert [request.url.path.rsplit("/", 1)[-1] for request in transport.calls] == ["AddSite"]
+    stored = PlanStore(tmp_path, settings.plan_ttl_seconds).get(result["plan_id"])
+    assert stored.state == "applied"
+    events = [entry["event"] for entry in audit.entries()]
+    assert events == ["plan_created", "plan_apply_attempted", "plan_apply_succeeded"]
+
+
+async def test_one_step_write_is_refused_when_writes_are_disabled(tmp_path) -> None:
+    settings = fake_settings(tmp_path, allow_writes=False)
+    audit, limiter = _write_context(tmp_path, settings)
+    transport = bing_transport({"AddSite": None})
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(PolicyDenied):
+            await execute_write(
+                "add_site",
+                sample_args("add_site"),
+                settings=settings,
+                client=client,
+                audit=audit,
+                limiter=limiter,
+            )
+    assert transport.calls == []
+    assert not list((tmp_path / "plans").glob("*.json"))
+
+
+async def test_one_step_write_still_honours_the_denylist(tmp_path) -> None:
+    settings = fake_settings(tmp_path, denied_sites=("a.example",))
+    audit, limiter = _write_context(tmp_path, settings)
+    transport = bing_transport({"AddSite": None})
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(PolicyDenied):
+            await execute_write(
+                "add_site",
+                sample_args("add_site"),
+                settings=settings,
+                client=client,
+                audit=audit,
+                limiter=limiter,
+            )
+    assert transport.calls == []
+
+
+async def test_one_step_write_still_honours_the_local_daily_ceiling(tmp_path) -> None:
+    settings = fake_settings(tmp_path, max_writes_per_day=1)
+    audit, limiter = _write_context(tmp_path, settings)
+    transport = bing_transport({"AddSite": None})
+    async with BingClient(settings, transport=transport) as client:
+        await execute_write(
+            "add_site",
+            sample_args("add_site"),
+            settings=settings,
+            client=client,
+            audit=audit,
+            limiter=limiter,
+        )
+        with pytest.raises(QuotaExceeded):
+            await execute_write(
+                "add_site",
+                sample_args("add_site"),
+                settings=settings,
+                client=client,
+                audit=audit,
+                limiter=limiter,
+            )
+    assert [request.url.path.rsplit("/", 1)[-1] for request in transport.calls] == ["AddSite"]
+
+
+async def test_a_failed_one_step_write_leaves_no_applicable_plan(tmp_path) -> None:
+    """Nobody reviews a one-step plan, so a failed one must not stay applicable."""
+    settings = fake_settings(tmp_path, max_writes_per_day=1)
+    audit, limiter = _write_context(tmp_path, settings)
+    limiter.consume("https://a.example", 1)
+    transport = bing_transport({"AddSite": None})
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(QuotaExceeded) as caught:
+            await execute_write(
+                "add_site",
+                sample_args("add_site"),
+                settings=settings,
+                client=client,
+                audit=audit,
+                limiter=limiter,
+            )
+    assert transport.calls == []
+    plan_id = caught.value.to_dict()["details"]["plan_id"]
+    store = PlanStore(tmp_path, settings.plan_ttl_seconds)
+    assert store.get(plan_id).state == "rejected"
+    assert "plan_discarded" in [entry["event"] for entry in audit.entries()]
+
+
+async def test_an_unknown_outcome_keeps_its_state_and_names_its_plan(tmp_path) -> None:
+    settings = fake_settings(tmp_path)
+    audit, limiter = _write_context(tmp_path, settings)
+    transport = httpx.MockTransport(lambda request: httpx.Response(503, json={"Message": "down"}))
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(PlanUnknownOutcome) as caught:
+            await execute_write(
+                "add_site",
+                sample_args("add_site"),
+                settings=settings,
+                client=client,
+                audit=audit,
+                limiter=limiter,
+            )
+    plan_id = caught.value.to_dict()["details"]["plan_id"]
+    assert PlanStore(tmp_path, settings.plan_ttl_seconds).get(plan_id).state == "unknown_outcome"

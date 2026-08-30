@@ -11,8 +11,8 @@ from bing_webmaster_mcp.writes import WRITE_OPS
 ROOT = Path(__file__).resolve().parents[1]
 PITCH = (
     "bing-webmaster-mcp gives an AI agent read access to what Bing knows about your sites "
-    "— traffic, indexing, crawl issues, inbound links, keywords — and a reviewed, two-step "
-    "path for the operations that change something."
+    "— traffic, indexing, crawl issues, inbound links, keywords — and a write path you "
+    "choose: direct by default, or reviewed plan-and-apply."
 )
 
 
@@ -21,15 +21,17 @@ def test_pitch_is_consistent() -> None:
         assert PITCH in path.read_text()
 
 
-def test_readme_states_security_boundary_and_indexnow_google_fact() -> None:
+def test_readme_states_the_write_switch_and_indexnow_google_fact() -> None:
     text = (ROOT / "README.md").read_text().casefold()
-    assert "no apply tool" in text or "deliberately no" in text
+    assert "bing_wm_allow_writes" in text
+    assert "prompt injection" in text
     assert "google" in text and "does not participate" in text
 
 
 def test_every_mcp_tool_and_write_is_documented() -> None:
     operations = (ROOT / "docs" / "operations.md").read_text()
-    assert not [name for name in tool_names() if name not in operations]
+    for allow_writes in (True, False):
+        assert not [name for name in tool_names(allow_writes) if name not in operations]
     assert not [name for name in WRITE_OPS if name not in operations]
 
 
@@ -59,6 +61,7 @@ def test_configuration_names_every_setting() -> None:
         "BING_WM_MAX_ATTEMPTS",
         "BING_WM_PLAN_TTL_SECONDS",
         "BING_WM_STATE_DIR",
+        "BING_WM_ALLOW_WRITES",
         "BING_WM_DENIED_SITES",
         "BING_WM_MAX_WRITES_PER_DAY",
         "BING_WM_HTTP_HOST",

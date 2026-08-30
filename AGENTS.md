@@ -14,12 +14,14 @@ the repo, not what to build.
 - **No network in tests.** A test that reaches the internet is a broken test.
 - **No secrets in the repo.** The API key comes from the environment. Never commit
   a real key, a key-file name, or a site list. `.env` stays ignored.
-- **Writes go through plan-and-apply.** If you are adding a mutating operation and
-  find yourself writing a direct-execute MCP tool, stop — that is the one thing
-  this project exists to do differently (`SPEC.md` §6).
-- **Never add an apply tool to the MCP server.** There is a test asserting its
-  absence. If that test fails, the fix is to remove the tool, not to update the
-  test.
+- **Every write goes through the apply boundary.** `BING_WM_ALLOW_WRITES` picks
+  whether a human sits between plan and apply, not whether the boundary exists. A
+  mutating operation that reaches Bing without creating a plan record and passing
+  through `apply_plan` is a bug, however it was invoked (`SPEC.md` §6).
+- **Never add an apply or reject tool to the MCP server**, in either mode. There
+  is a test asserting their absence. If that test fails, the fix is to remove the
+  tool, not to update the test. Enabling direct writes replaces the planning
+  tools; it never adds a tool that can confirm a plan somebody else wrote.
 
 ## Conventions
 

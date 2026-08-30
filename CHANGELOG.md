@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Add `BING_WM_ALLOW_WRITES` (default `true`) to choose the write path. With it on,
+  the MCP server advertises one-step `bing_<operation>` tools and the CLI gains
+  `bing-wm write`, `submit-url`, `submit-urls`, `submit-sitemap`, `block-url` and
+  `indexnow submit`, all of which reach Bing on the first call. Setting it to
+  `false` restores the previous behaviour: only `bing_plan_<operation>` tools, and
+  a human applies the plan with `bing-wm plan apply`. A one-step write still
+  records a plan and goes through the same apply boundary, so the denylist, Bing's
+  quota check, the local daily ceiling, one-shot application and the audit trail
+  are unchanged. No MCP tool accepts a plan ID in either mode, so none can apply or
+  reject a plan recorded for review.
+- Refuse a one-step write's plan when the write itself fails, so a plan nobody reviewed
+  cannot be applied by hand later, and name the plan in the error so an unknown outcome
+  can be traced.
+- Report `POLICY_DENIED` rather than `AUTH_FAILED` for a write attempted while
+  `BING_WM_ALLOW_WRITES=false` and no API key is set.
 - Implement all 59 supported Bing Webmaster Tools API methods.
 - Add the CLI and a 62-tool MCP stdio server with no apply capability over MCP.
 - Put all Bing mutations and IndexNow submission behind durable, expiring plans.
