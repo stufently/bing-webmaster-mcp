@@ -3,11 +3,11 @@
 The implementation is complete in the checkout. These steps require the repository
 owner's external accounts and are intentionally not automated from a developer machine.
 
-## In progress
+## Recently completed
 
-- [ ] 2026-08-30 — `BING_WM_ALLOW_WRITES` write-path switch: code, tests and docs are
-  done and green. Remaining: rebuild the local `bing-webmaster-mcp:local` image so the
-  Claude and Codex MCP entries pick the change up.
+- [x] 2026-08-30 — `BING_WM_ALLOW_WRITES` write-path switch shipped; the local
+  `bing-webmaster-mcp:local` image is rebuilt and serves the direct write tools to the
+  Claude and Codex MCP entries. Each client picks them up on its next restart.
 
 ## Open follow-up
 
