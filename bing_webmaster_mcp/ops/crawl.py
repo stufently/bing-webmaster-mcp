@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from ..client import BingClient
@@ -11,6 +12,113 @@ FILTER_FIELDS = (
     "DocFlagsFilters",
     "HttpCodeFilters",
 )
+
+# Microsoft's UrlWithCrawlIssues.CrawlIssues flags enum, transcribed from its property
+# page (fetched 2026-09-01). The bits and the Microsoft names are theirs; only the
+# snake_case category label on the right belongs to this project. Bing has no "noindex"
+# crawl-issue bit, so no category invents one; nothing in this API reports a robots meta
+# tag or X-Robots-Tag header at all.
+CRAWL_ISSUE_FLAGS: tuple[tuple[int, str, str], ...] = (
+    (1, "Code301", "redirect_301"),
+    (2, "Code302", "redirect_302"),
+    (4, "Code4xx", "http_4xx"),
+    (8, "Code5xx", "http_5xx"),
+    (16, "BlockedByRobotsTxt", "blocked_by_robots_txt"),
+    (32, "ContainsMalware", "contains_malware"),
+    (64, "ImportantUrlBlockedByRobotsTxt", "important_url_blocked_by_robots_txt"),
+    (128, "DnsErrors", "dns_errors"),
+    (256, "TimeOutErrors", "timeout_errors"),
+)
+NO_ISSUE_CATEGORY = "none"
+OTHER_CATEGORY = "other"
+CRAWL_ISSUE_CATEGORIES = tuple(
+    [category for _bit, _name, category in CRAWL_ISSUE_FLAGS] + [NO_ISSUE_CATEGORY, OTHER_CATEGORY]
+)
+_KNOWN_BITS = sum(bit for bit, _name, _category in CRAWL_ISSUE_FLAGS)
+_BY_NAME = {name.casefold(): bit for bit, name, _category in CRAWL_ISSUE_FLAGS}
+_BY_NAME["none"] = 0
+
+
+def _issue_bits(value: Any) -> int | None:
+    """Read Bing's ``Issues`` field as a bitmask, or ``None`` if it is not one.
+
+    The JSON endpoint serializes the flags enum as a number, which is the only shape
+    seen in practice. A numeric string and a comma-separated list of Microsoft's own
+    member names are accepted too, because misreading the field would silently drop
+    every issue on the row rather than fail loudly.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    try:
+        number = int(text)
+    except ValueError:
+        pass
+    else:
+        return number if number >= 0 else None
+    bits = 0
+    for token in text.split(","):
+        bit = _BY_NAME.get(token.strip().casefold())
+        if bit is None:
+            return None
+        bits |= bit
+    return bits
+
+
+def categorise_issue(value: Any) -> tuple[list[str], int]:
+    """Categories for one ``Issues`` value, plus any bits Microsoft has not documented.
+
+    Nothing is dropped: an unreadable field, an unknown bit and a row with no flags all
+    land in a category of their own rather than vanishing from the counts.
+    """
+    bits = _issue_bits(value)
+    if bits is None:
+        return [OTHER_CATEGORY], 0
+    if bits == 0:
+        return [NO_ISSUE_CATEGORY], 0
+    categories = [category for bit, _name, category in CRAWL_ISSUE_FLAGS if bits & bit]
+    unknown = bits & ~_KNOWN_BITS
+    if unknown:
+        categories.append(OTHER_CATEGORY)
+    return categories, unknown
+
+
+def summarise_crawl_issues(rows: Any) -> dict[str, Any]:
+    """Count Bing's crawl issues by category without discarding the raw rows.
+
+    Every field Bing sent is passed through untouched; the derived ``categories`` and
+    ``unknown_issue_bits`` keys are lower-case, so they cannot collide with Microsoft's
+    PascalCase properties.
+    """
+    if not isinstance(rows, list):
+        return {"total": 0, "categories": {}, "http_codes": {}, "issues": rows}
+    categories: Counter[str] = Counter()
+    http_codes: Counter[int] = Counter()
+    issues: list[Any] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            categories[OTHER_CATEGORY] += 1
+            issues.append(row)
+            continue
+        names, unknown = categorise_issue(row.get("Issues"))
+        categories.update(names)
+        code = row.get("HttpCode")
+        if isinstance(code, int) and not isinstance(code, bool):
+            http_codes[code] += 1
+        entry: dict[str, Any] = {**row, "categories": names}
+        if unknown:
+            entry["unknown_issue_bits"] = unknown
+        issues.append(entry)
+    return {
+        "total": len(rows),
+        "categories": dict(sorted(categories.items())),
+        "http_codes": {str(code): count for code, count in sorted(http_codes.items())},
+        "issues": issues,
+    }
 
 
 async def url_info(client: BingClient, site_url: str, url: str) -> dict[str, Any]:
@@ -61,8 +169,10 @@ async def crawl_stats(client: BingClient, site_url: str) -> list[dict[str, Any]]
     return await fetch(client, "GetCrawlStats", {"siteUrl": normalise_site(site_url)})
 
 
-async def crawl_issues(client: BingClient, site_url: str) -> list[dict[str, Any]]:
-    return await fetch(client, "GetCrawlIssues", {"siteUrl": normalise_site(site_url)})
+async def crawl_issues(client: BingClient, site_url: str) -> dict[str, Any]:
+    """Crawl issues with per-category counts, keeping every raw field Bing returned."""
+    rows = await fetch(client, "GetCrawlIssues", {"siteUrl": normalise_site(site_url)})
+    return summarise_crawl_issues(rows)
 
 
 async def crawl_settings(client: BingClient, site_url: str) -> dict[str, Any]:

@@ -105,6 +105,35 @@ per-call cap of 500 and must also fit the live quota returned by
 per `SubmitContent` request; the combined decoded `httpMessage` and `structuredData`
 must fit it.
 
+## Verified response types
+
+- `UrlWithCrawlIssues` (returned by `GetCrawlIssues`): `HttpCode` (Int32), `InLinks`,
+  `Issues`, `Url`. Source:
+  <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.urlwithcrawlissues?view=bing-webmaster-dotnet>,
+  fetched 2026-09-01.
+- `UrlWithCrawlIssues.CrawlIssues` is a `[Flags]` enum, so `Issues` is a bitmask and one
+  URL can carry several: `None` 0, `Code301` 1, `Code302` 2, `Code4xx` 4, `Code5xx` 8,
+  `BlockedByRobotsTxt` 16, `ContainsMalware` 32, `ImportantUrlBlockedByRobotsTxt` 64,
+  `DnsErrors` 128, `TimeOutErrors` 256. Source:
+  <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.urlwithcrawlissues.crawlissues?view=bing-webmaster-dotnet>,
+  fetched 2026-09-01. There is no `noindex` member and no separate 404 or 403 member;
+  the exact status code is the `HttpCode` field, not a flag.
+
+- `UrlInfo` (returned by `GetUrlInfo`): `AnchorCount`, `DiscoveryDate`, `DocumentSize`,
+  `HttpStatus`, `IsPage`, `LastCrawledDate`, `TotalChildUrlCount`, `Url`. Source:
+  <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.urlinfo?view=bing-webmaster-dotnet>,
+  fetched 2026-09-01. There is no indexing-status, robots-directive or content-changed
+  property.
+- `QueryStats` (returned by `GetQueryStats`): `AvgClickPosition`,
+  `AvgImpressionPosition`, `Clicks`, `Date`, `Impressions`, `Query`.
+  `RankAndTrafficStats` (returned by `GetRankAndTrafficStats`): `Clicks`, `Date`,
+  `Impressions`. Sources:
+  <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.querystats?view=bing-webmaster-dotnet>
+  and
+  <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.rankandtrafficstats?view=bing-webmaster-dotnet>,
+  fetched 2026-09-01. **Bing returns no CTR field**; a click-through rate is
+  `Clicks / Impressions`, computed by the caller.
+
 Microsoft's `AddSiteRoles` JSON example pairs `siteUrl: http://example.com` with
 `delegatedUrl: http://host1.example.com`. The delegated URL is therefore validated as
 absolute but is not restricted to the site's exact host.

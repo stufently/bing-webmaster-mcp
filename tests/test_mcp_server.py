@@ -176,3 +176,45 @@ async def test_a_disabled_write_is_policy_denied_even_without_an_api_key(
     result = await mcp_server.call_tool("bing_add_site", {"site_url": "https://a.example"})
     assert result.is_error is True
     assert result.structured_content["code"] == "POLICY_DENIED"
+
+
+def test_the_local_indexnow_key_tool_is_advertised_read_only_in_both_modes() -> None:
+    for allow_writes in (True, False):
+        assert "bing_indexnow_key_plan" in mcp_server.tool_names(allow_writes)
+    spec = mcp_server.TOOL_SPECS["bing_indexnow_key_plan"]
+    assert spec.read_only is True
+    assert spec.destructive is False
+    description = spec.description.casefold()
+    assert "sends nothing" in description
+    assert "records no plan" in description
+
+
+def test_the_local_indexnow_key_tool_is_not_a_write_operation() -> None:
+    """It computes and checks; it must never be routed through the apply boundary."""
+    assert "indexnow_key_plan" not in WRITE_OPS
+    assert "bing_plan_indexnow_key_plan" not in mcp_server.tool_names(False)
+
+
+async def test_the_local_indexnow_key_tool_validates_its_arguments() -> None:
+    result = await mcp_server.call_tool("bing_indexnow_key_plan", {"host": 7})
+    assert result.is_error is True
+    assert result.structured_content["code"] == "INVALID_REQUEST"
+
+
+async def test_the_local_indexnow_key_tool_needs_no_api_key(monkeypatch, tmp_path) -> None:
+    """A local calculation must not fail on credentials it never uses."""
+    monkeypatch.delenv("BING_WM_API_KEY", raising=False)
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+    result = await mcp_server.call_tool(
+        "bing_indexnow_key_plan", {"host": "a.example", "check_key_file": False}
+    )
+    assert result.is_error is not True
+    plan = result.structured_content["result"]
+    assert plan["key_location"] == f"https://a.example/{plan['key']}.txt"
+
+
+async def test_the_local_indexnow_key_tool_admits_it_reaches_an_outside_host() -> None:
+    """openWorldHint is about the world it can touch, not about mutation."""
+    tools = {tool.name: tool for tool in (await mcp_server.list_tools()).tools}
+    assert tools["bing_indexnow_key_plan"].annotations.open_world_hint is True
+    assert tools["bing_crawl_issues"].annotations.open_world_hint is False

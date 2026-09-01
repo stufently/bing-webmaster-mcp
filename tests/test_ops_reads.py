@@ -168,9 +168,80 @@ async def test_keyword_reads_are_standalone(tmp_path, function, method: str, arg
 async def test_read_results_are_sanitized(tmp_path) -> None:
     transport = bing_transport({"GetCrawlIssues": [{"Url": "x\u202eevil", "Message": "m\x00"}]})
     async with BingClient(fake_settings(tmp_path), transport=transport) as client:
-        rows: list[dict[str, Any]] = await crawl.crawl_issues(client, "a.example")
-    assert rows[0]["Url"] == {"value": "xevil", "untrusted": True}
-    assert rows[0]["Message"] == {"value": "m", "untrusted": True}
+        result: dict[str, Any] = await crawl.crawl_issues(client, "a.example")
+    row = result["issues"][0]
+    assert row["Url"] == {"value": "xevil", "untrusted": True}
+    assert row["Message"] == {"value": "m", "untrusted": True}
+
+
+@pytest.mark.parametrize(
+    ("issues", "expected"),
+    [
+        (0, ["none"]),
+        (1, ["redirect_301"]),
+        (2, ["redirect_302"]),
+        (4, ["http_4xx"]),
+        (8, ["http_5xx"]),
+        (16, ["blocked_by_robots_txt"]),
+        (32, ["contains_malware"]),
+        (64, ["important_url_blocked_by_robots_txt"]),
+        (128, ["dns_errors"]),
+        (256, ["timeout_errors"]),
+        (12, ["http_4xx", "http_5xx"]),
+        ("4", ["http_4xx"]),
+        ("Code4xx, BlockedByRobotsTxt", ["http_4xx", "blocked_by_robots_txt"]),
+    ],
+)
+def test_documented_issue_flags_map_to_categories(issues: Any, expected: list[str]) -> None:
+    categories, unknown = crawl.categorise_issue(issues)
+    assert sorted(categories) == sorted(expected)
+    assert unknown == 0
+
+
+@pytest.mark.parametrize("issues", [None, "unheard-of", -1, True, {"a": 1}])
+def test_an_unreadable_issue_field_becomes_other_and_is_never_dropped(issues: Any) -> None:
+    assert crawl.categorise_issue(issues) == (["other"], 0)
+
+
+def test_an_undocumented_bit_is_kept_as_other_alongside_the_known_ones() -> None:
+    categories, unknown = crawl.categorise_issue(4 | 1024)
+    assert categories == ["http_4xx", "other"]
+    assert unknown == 1024
+
+
+def test_crawl_issue_summary_counts_categories_and_http_codes_without_losing_raw_fields() -> None:
+    rows = [
+        {"Url": "https://a.example/a", "HttpCode": 404, "Issues": 4, "InLinks": 3},
+        {"Url": "https://a.example/b", "HttpCode": 403, "Issues": 4},
+        {"Url": "https://a.example/c", "HttpCode": 200, "Issues": 16},
+        {"Url": "https://a.example/d", "HttpCode": 0, "Issues": 128 | 2048},
+    ]
+    summary = crawl.summarise_crawl_issues(rows)
+    assert summary["total"] == 4
+    assert summary["categories"] == {
+        "blocked_by_robots_txt": 1,
+        "dns_errors": 1,
+        "http_4xx": 2,
+        "other": 1,
+    }
+    assert summary["http_codes"] == {"0": 1, "200": 1, "403": 1, "404": 1}
+    assert summary["issues"][0]["InLinks"] == 3
+    assert summary["issues"][0]["Issues"] == 4
+    assert summary["issues"][0]["Url"] == "https://a.example/a"
+    assert summary["issues"][3]["unknown_issue_bits"] == 2048
+
+
+def test_a_site_with_no_crawl_issues_summarises_to_zero() -> None:
+    assert crawl.summarise_crawl_issues([]) == {
+        "total": 0,
+        "categories": {},
+        "http_codes": {},
+        "issues": [],
+    }
+
+
+def test_an_unexpected_crawl_issue_payload_is_returned_rather_than_discarded() -> None:
+    assert crawl.summarise_crawl_issues({"d": "surprise"})["issues"] == {"d": "surprise"}
 
 
 def test_site_url_with_an_unparsable_port_is_rejected() -> None:

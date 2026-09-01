@@ -5,6 +5,7 @@
 ## Documentation
 
 - [README](README.md): installation, safety model, and common workflows.
+- [Agent skill](SKILL.md): task recipes and the rules an agent must follow.
 - [Implementation contract](SPEC.md): normative scope and verified facts.
 - [Operations](docs/operations.md): all CLI commands, MCP tools, and write plans.
 - [API surface](docs/api-surface.md): exact Microsoft method names, parameters, and verbs.

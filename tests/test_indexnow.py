@@ -12,6 +12,16 @@ HOST = "a.example"
 KEY = "0123456789abcdef0123456789abcdef"
 
 
+@pytest.fixture
+def public_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve the test host to a public address without touching real DNS."""
+
+    async def resolve(host: str) -> set[str]:
+        return {"93.184.216.34"}
+
+    monkeypatch.setattr(indexnow, "_resolve", resolve)
+
+
 def test_generated_key_matches_protocol() -> None:
     assert re.fullmatch(r"[A-Za-z0-9-]{8,128}", indexnow.generate_key())
 
@@ -199,3 +209,129 @@ async def test_oversized_key_file_is_rejected_without_buffering_the_rest() -> No
     async with httpx.AsyncClient(transport=transport) as http:
         with pytest.raises(InvalidRequest, match="does not contain"):
             await indexnow.verify_key_file(http, HOST, KEY)
+
+
+async def test_key_plan_generates_a_key_and_sends_nothing() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        plan = await indexnow.key_plan(http, HOST)
+    assert calls == []
+    assert plan["generated"] is True
+    assert re.fullmatch(r"[A-Za-z0-9-]{8,128}", plan["key"])
+    assert plan["key_location"] == f"https://{HOST}/{plan['key']}.txt"
+    assert plan["key_file_contents"] == plan["key"]
+    assert plan["authorizes_urls_under"] == f"https://{HOST}/"
+    assert plan["key_file"] == {"checked": False, "present": None}
+
+
+async def test_key_plan_reports_a_published_key_file(public_host) -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=KEY))
+    async with httpx.AsyncClient(transport=transport) as http:
+        plan = await indexnow.key_plan(http, HOST, key=KEY)
+    assert plan["generated"] is False
+    assert plan["key_file"] == {"checked": True, "present": True}
+
+
+async def test_key_plan_reports_a_missing_key_file_as_a_result_not_an_error(
+    public_host,
+) -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(404, request=request))
+    async with httpx.AsyncClient(transport=transport) as http:
+        plan = await indexnow.key_plan(http, HOST, key=KEY)
+    assert plan["key_file"]["checked"] is True
+    assert plan["key_file"]["present"] is False
+    assert "not reachable" in plan["key_file"]["detail"]
+
+
+async def test_key_plan_names_the_subpath_a_hosted_key_authorizes(public_host) -> None:
+    location = f"https://{HOST}/news/{KEY}.txt"
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=KEY))
+    ) as http:
+        plan = await indexnow.key_plan(http, HOST, key=KEY, key_location=location)
+    assert plan["authorizes_urls_under"] == f"https://{HOST}/news/"
+
+
+async def test_key_plan_check_can_be_forced_off_and_on(public_host) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, text=KEY, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        assert (await indexnow.key_plan(http, HOST, key=KEY, check_key_file=False))["key_file"] == {
+            "checked": False,
+            "present": None,
+        }
+        assert calls == []
+        plan = await indexnow.key_plan(http, HOST, check_key_file=True)
+    assert plan["generated"] is True
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("host", "key"),
+    [("localhost", None), ("127.0.0.1", None), (HOST, "short"), (HOST, "has_underscore")],
+)
+async def test_key_plan_rejects_what_submission_would_reject(host: str, key: str | None) -> None:
+    with pytest.raises(InvalidRequest):
+        await indexnow.key_plan(None, host, key=key)
+
+
+@pytest.mark.parametrize(
+    "address", ["127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.1.1", "::1", "fd00::1"]
+)
+async def test_key_file_check_refuses_a_host_resolving_off_the_public_internet(
+    monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    """A well-formed name is not a public host: foo.localhost and *.nip.io resolve home."""
+    calls: list[str] = []
+
+    async def resolve(host: str) -> set[str]:
+        return {address}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, text=KEY, request=request)
+
+    monkeypatch.setattr(indexnow, "_resolve", resolve)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        plan = await indexnow.key_plan(http, HOST, key=KEY)
+    assert calls == []
+    assert plan["key_file"]["present"] is False
+    assert "non-public" in plan["key_file"]["detail"]
+
+
+async def test_key_file_check_refuses_a_host_that_does_not_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def resolve(host: str) -> set[str]:
+        raise OSError("Name or service not known")
+
+    monkeypatch.setattr(indexnow, "_resolve", resolve)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=KEY))
+    ) as http:
+        plan = await indexnow.key_plan(http, HOST, key=KEY)
+    assert plan["key_file"]["present"] is False
+    assert "does not resolve" in plan["key_file"]["detail"]
+
+
+async def test_key_file_check_accepts_a_mixed_answer_only_if_every_address_is_public(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def resolve(host: str) -> set[str]:
+        return {"93.184.216.34", "127.0.0.1"}
+
+    monkeypatch.setattr(indexnow, "_resolve", resolve)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=KEY))
+    ) as http:
+        plan = await indexnow.key_plan(http, HOST, key=KEY)
+    assert plan["key_file"]["present"] is False

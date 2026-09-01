@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+import httpx
 
 from .apply import apply_plan, execute_write
 from .audit import AuditLog
@@ -397,11 +398,28 @@ def _register_site_read(
 
 for _name, _function in {
     "stats": crawl.crawl_stats,
-    "issues": crawl.crawl_issues,
     "settings": crawl.crawl_settings,
     "fetched": crawl.fetched_urls,
 }.items():
     _register_site_read(crawl_group, _name, _function)
+
+
+@crawl_group.command("issues")
+@click.argument("site")
+@json_option
+@guarded
+def crawl_issues(site: str, as_json: bool) -> None:
+    """Crawl issues counted by category, with every raw field Bing returned."""
+    result = run_async(_read(crawl.crawl_issues, site))
+    if as_json:
+        emit(result, True)
+        return
+    click.echo(f"{result['total']} URLs with crawl issues")
+    for category, count in result["categories"].items():
+        click.echo(f"  {category}: {count}")
+    for code, count in result["http_codes"].items():
+        click.echo(f"  HTTP {code}: {count}")
+    emit(result["issues"], False)
 
 
 @crawl_group.command("fetched-details")
@@ -574,11 +592,37 @@ def indexnow_group() -> None:
 
 @indexnow_group.command("key")
 @click.argument("host")
+@click.option("--key", help="Inspect an existing key instead of generating a new one.")
+@click.option("--key-location", help="Exact key-file URL when the key lives under a subpath.")
+@click.option(
+    "--check/--no-check",
+    "check",
+    default=None,
+    help="Fetch the key file to see whether it is served. On by default with --key.",
+)
 @json_option
 @guarded
-def indexnow_key(host: str, as_json: bool) -> None:
-    key = indexnow.generate_key()
-    emit({"key": key, "key_location": indexnow.key_location(host, key)}, as_json)
+def indexnow_key(
+    host: str, key: str | None, key_location: str | None, check: bool | None, as_json: bool
+) -> None:
+    """Prepare IndexNow key material. Sends nothing to Bing or IndexNow.
+
+    A generated key is printed once and stored nowhere: save it and serve the key file.
+    """
+    emit(run_async(_key_plan(host, key, key_location, check)), as_json)
+
+
+async def _key_plan(
+    host: str, key: str | None, key_location: str | None, check: bool | None
+) -> dict[str, Any]:
+    async with httpx.AsyncClient(transport=_transport(), timeout=30.0) as http:
+        return await indexnow.key_plan(
+            http,
+            host,
+            key=key,
+            key_location=key_location,
+            check_key_file=check,
+        )
 
 
 @indexnow_group.command("submit")

@@ -95,7 +95,8 @@ all settings.
 
 Run the stdio server with `bing-webmaster-mcp`. Point an MCP client at that executable
 and pass `BING_WM_API_KEY` through its protected environment configuration. The server
-exposes 34 read tools, plan inspection, and one write tool per supported operation —
+exposes 34 Bing read tools, one local read-only tool (`bing_indexnow_key_plan`), plan
+inspection, and one write tool per supported operation —
 direct `bing_<operation>` tools by default, or `bing_plan_<operation>` tools when
 `BING_WM_ALLOW_WRITES=false`. It exposes no plan application or rejection tool. Restart
 the server after changing the setting so the client refreshes its tool list.
@@ -110,6 +111,17 @@ bing-webmaster-mcp-http
 It refuses non-loopback bind addresses and unauthenticated requests.
 
 ## Common questions
+
+### Which crawl issues does my site have?
+
+```console
+bing-wm crawl issues example.com --json
+```
+
+The result carries Bing's rows unchanged plus a category breakdown built from
+Microsoft's `UrlWithCrawlIssues.CrawlIssues` flags — redirects, 4xx, 5xx, robots.txt
+blocks, malware, DNS and timeout errors — with a count per category, a count per raw
+`HttpCode`, and an `other` bucket so nothing Bing sends is dropped.
 
 ### How do I check if Bing has indexed my page?
 
@@ -148,8 +160,14 @@ Generate a key, host the displayed UTF-8 key file, then submit:
 
 ```console
 bing-wm indexnow key example.com
+bing-wm indexnow key example.com --key KEY   # is the key file live yet?
 bing-wm indexnow submit example.com --file PATH --key KEY
 ```
+
+`indexnow key` — and the matching `bing_indexnow_key_plan` MCP tool — only computes and
+checks. It talks to neither Bing nor `api.indexnow.org`, so it is not a write and needs
+no plan. The generated key is printed once and stored nowhere: save it, serve it at the
+printed URL, then submit.
 
 Or, with `BING_WM_ALLOW_WRITES=false`:
 
@@ -177,6 +195,7 @@ instructions.
 
 ## Coverage and references
 
+- [Agent skill: how to drive this server](SKILL.md)
 - [CLI commands, MCP tools, and write operations](docs/operations.md)
 - [Complete 62-method Microsoft interface transcription](docs/api-surface.md)
 - [Product boundaries](docs/product-boundaries.md)

@@ -13,7 +13,11 @@ accept `--json`; lists render as human-readable tables otherwise.
 - `bing-wm keywords get|stats|related`
 - `bing-wm sitemaps list|details`
 - `bing-wm quota`, `content-quota`, `blocking`, `query-parameters`, `geo-settings`
-- `bing-wm indexnow key`
+- `bing-wm indexnow key HOST [--key KEY] [--key-location URL] [--check/--no-check]`
+  generates or inspects an IndexNow key. It sends nothing to Bing or IndexNow and
+  stores nothing: a generated key is printed once. `--check` fetches the key file on
+  your own host to see whether it is already served, and is on by default with
+  `--key` (a key generated here cannot be published yet).
 
 One-step writes, available while `BING_WM_ALLOW_WRITES` is on (the default). They send
 the change immediately and print the applied plan:
@@ -46,6 +50,30 @@ The reviewed path stays available in both modes and is the only path when
 - `bing_query_parameters`, `bing_geo_settings`
 - `bing_link_counts`, `bing_url_links`, `bing_connected_pages`
 - `bing_keyword`, `bing_keyword_stats`, `bing_related_keywords`
+
+`bing_crawl_issues` returns `{total, categories, http_codes, issues}`. Each row in
+`issues` keeps every field Bing sent and gains a lower-case `categories` list, plus
+`unknown_issue_bits` when Bing sets a flag Microsoft has not documented. Categories
+come from Microsoft's `UrlWithCrawlIssues.CrawlIssues` flags enum — `redirect_301`,
+`redirect_302`, `http_4xx`, `http_5xx`, `blocked_by_robots_txt`, `contains_malware`,
+`important_url_blocked_by_robots_txt`, `dns_errors`, `timeout_errors` — plus `none`
+for a row with no flags and `other` for anything unrecognised. Bing has no `noindex`
+crawl-issue flag, so there is no such category. `http_codes` counts the raw
+`HttpCode` field, which is where a 404/403 split lives.
+
+## MCP local read-only tools
+
+- `bing_indexnow_key_plan` — generate or inspect IndexNow key material for a host:
+  the key, the exact key-file URL, the bytes that file must contain, the URL prefix
+  the key authorizes, and whether the file is already served. It reaches neither Bing
+  nor `api.indexnow.org`, needs no API key, consumes no quota and records no plan, so
+  there is nothing to apply. Its only network access is an optional unauthenticated
+  GET of the key file on the host given, the same request the submission preflight
+  makes; that check is skipped by default for a key the tool just generated. Before
+  fetching, the host is resolved and refused if any address is not globally routable,
+  and the MCP path ignores proxy environment variables — a syntactically valid name like
+  `foo.localhost` or `127.0.0.1.nip.io` must not turn this tool into a way to reach the
+  operator's own network. The key is not stored: it exists only in the response.
 
 ## MCP write tools
 

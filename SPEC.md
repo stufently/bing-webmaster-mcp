@@ -324,6 +324,8 @@ MCP tools: `bing_sites_list`, `bing_site_roles`, `bing_traffic_queries`,
 `bing_query_parameters`, `bing_geo_settings`, `bing_page_preview_blocks`,
 `bing_deep_link_blocks`, `bing_site_moves`, `bing_fetched_urls`,
 `bing_submission_quota`, `bing_content_submission_quota`,
+plus `bing_indexnow_key_plan`, which computes IndexNow key material locally
+and reaches neither Bing nor `api.indexnow.org`,
 plus one write tool per operation — `bing_<operation>` when
 `BING_WM_ALLOW_WRITES` is on, `bing_plan_<operation>` when it is off — plus
 `bing_plan_list` and `bing_plan_show`. No `bing_plan_apply` in either mode.

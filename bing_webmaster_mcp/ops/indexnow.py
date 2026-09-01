@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 import secrets
+import socket
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -12,11 +14,13 @@ import httpx
 
 from ..errors import (
     AuthFailed,
+    BingWebmasterError,
     InvalidRequest,
     PlanUnknownOutcome,
     RateLimited,
     UpstreamUnavailable,
 )
+from ..render import sanitize_text
 from ..urls import validate_http_url
 
 ENDPOINT = "https://api.indexnow.org/indexnow"
@@ -135,6 +139,97 @@ async def verify_key_file(
             f"IndexNow key file {url} does not contain the expected key",
             suggestion="the file must contain the key and no other content",
         )
+
+
+async def key_plan(
+    http: httpx.AsyncClient | None,
+    host: str,
+    key: str | None = None,
+    key_location: str | None = None,
+    check_key_file: bool | None = None,
+) -> dict[str, Any]:
+    """Everything needed to publish an IndexNow key, computed locally.
+
+    This is not a write and records no plan: nothing is sent to Bing or to
+    ``api.indexnow.org``, no quota is consumed and nothing is stored. A generated key
+    exists only in this response, so the operator has to save it and serve the key file
+    themselves. The optional reachability check is a plain unauthenticated GET of the
+    key file on the operator's own host - the same request the submission preflight
+    makes - and it is skipped by default for a key generated here, which cannot be
+    published yet.
+    """
+    normalized_host = validate_host(host)
+    generated = key is None
+    resolved_key = generate_key() if key is None else key
+    validate_key(resolved_key)
+    location = validate_key_location(normalized_host, resolved_key, key_location)
+    directory = urlsplit(location).path.rsplit("/", 1)[0]
+    if check_key_file is None:
+        check_key_file = not generated
+    plan: dict[str, Any] = {
+        "host": normalized_host,
+        "key": resolved_key,
+        "generated": generated,
+        "key_location": location,
+        "key_file_contents": resolved_key,
+        "authorizes_urls_under": f"https://{normalized_host}{directory}/",
+        "key_file": {"checked": False, "present": None},
+    }
+    if check_key_file:
+        plan["key_file"] = await _describe_key_file(http, normalized_host, resolved_key, location)
+    return plan
+
+
+async def _resolve(host: str) -> set[str]:
+    """Every address ``host`` resolves to. Separated out so tests can replace it."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    return {str(info[4][0]) for info in infos}
+
+
+async def assert_publicly_routable(host: str) -> None:
+    """Refuse a host that resolves anywhere but the public internet.
+
+    ``validate_host`` only judges the shape of a name, and ``foo.localhost`` or
+    ``127.0.0.1.nip.io`` are perfectly well-formed multi-label names that resolve to
+    loopback. An IndexNow key file is public by definition, so a private answer is never
+    the real thing - it is a way to aim this process at the operator's own network.
+    Checked here rather than in ``verify_key_file`` because this is the path an MCP
+    client can reach without a human approving anything.
+    """
+    try:
+        addresses = await _resolve(host)
+    except OSError as exc:
+        raise InvalidRequest(f"IndexNow host {host} does not resolve: {exc}") from exc
+    if not addresses:
+        raise InvalidRequest(f"IndexNow host {host} does not resolve")
+    for address in sorted(addresses):
+        # The scope id of a link-local IPv6 address is not part of the address itself.
+        if not ipaddress.ip_address(address.split("%", 1)[0]).is_global:
+            raise InvalidRequest(
+                f"IndexNow host {host} resolves to the non-public address {address}",
+                suggestion="the key file has to be served from the public internet",
+            )
+
+
+async def _describe_key_file(
+    http: httpx.AsyncClient | None,
+    host: str,
+    key: str,
+    location: str,
+) -> dict[str, Any]:
+    """Report whether the key file is already served, rather than raising.
+
+    Absence is the expected answer before the file is published, so it is a result and
+    not an error; the reason is still reported so a wrong path or a redirect is visible.
+    """
+    if http is None:
+        return {"checked": False, "present": None}
+    try:
+        await assert_publicly_routable(host)
+        await verify_key_file(http, host, key, location)
+    except BingWebmasterError as exc:
+        return {"checked": True, "present": False, "detail": sanitize_text(exc.message)}
+    return {"checked": True, "present": True}
 
 
 async def submit(

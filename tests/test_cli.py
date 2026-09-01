@@ -233,3 +233,57 @@ def test_a_disabled_write_is_policy_denied_even_without_an_api_key(tmp_path, mon
     )
     assert result.exit_code == 1
     assert json.loads(result.output)["code"] == "POLICY_DENIED"
+
+
+def test_crawl_issues_prints_counts_above_the_table(tmp_path, monkeypatch) -> None:
+    rows = [
+        {"Url": "https://a.example/a", "HttpCode": 404, "Issues": 4},
+        {"Url": "https://a.example/b", "HttpCode": 403, "Issues": 4},
+    ]
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: bing_transport({"GetCrawlIssues": rows}))
+    result = CliRunner().invoke(cli.main, ["crawl", "issues", "a.example"])
+    assert result.exit_code == 0, result.output
+    assert "2 URLs with crawl issues" in result.output
+    assert "http_4xx: 2" in result.output
+    assert "HTTP 404: 1" in result.output
+    assert "categories" in result.output
+
+
+def test_crawl_issues_json_keeps_the_raw_rows(tmp_path, monkeypatch) -> None:
+    rows = [{"Url": "https://a.example/a", "HttpCode": 500, "Issues": 8, "InLinks": 2}]
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: bing_transport({"GetCrawlIssues": rows}))
+    result = CliRunner().invoke(cli.main, ["crawl", "issues", "a.example", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["categories"] == {"http_5xx": 1}
+    assert payload["issues"][0]["InLinks"] == 2
+    assert payload["issues"][0]["categories"] == ["http_5xx"]
+
+
+def test_indexnow_key_generates_without_reaching_the_network(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    result = CliRunner().invoke(cli.main, ["indexnow", "key", "a.example", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["key_location"] == f"https://a.example/{payload['key']}.txt"
+    assert payload["key_file"] == {"checked": False, "present": None}
+
+
+def test_indexnow_key_checks_an_existing_key_file(tmp_path, monkeypatch) -> None:
+    import httpx
+
+    from bing_webmaster_mcp.ops import indexnow
+
+    async def resolve(host: str) -> set[str]:
+        return {"93.184.216.34"}
+
+    key = "0123456789abcdef0123456789abcdef"
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=key))
+    monkeypatch.setattr(indexnow, "_resolve", resolve)
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: transport)
+    result = CliRunner().invoke(cli.main, ["indexnow", "key", "a.example", "--key", key, "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["key_file"] == {"checked": True, "present": True}

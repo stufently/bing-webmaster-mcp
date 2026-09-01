@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Add `SKILL.md`: the task recipes an agent needs to drive this server — onboarding a
+  new site, a recurring crawl and traffic audit, when IndexNow replaces `submit_url` —
+  together with the rules it must not work around.
+- Categorise `bing_crawl_issues` / `bing-wm crawl issues` by Microsoft's
+  `UrlWithCrawlIssues.CrawlIssues` flags, with a count per category and per raw
+  `HttpCode`. Every field Bing returned is kept; an undocumented flag lands in `other`
+  and reports its bits rather than disappearing. The read now returns
+  `{total, categories, http_codes, issues}` instead of a bare list.
+- Add `bing_indexnow_key_plan` and options on `bing-wm indexnow key`, so generating an
+  IndexNow key, working out where its key file belongs and checking whether it is
+  already served is available to an agent and not only at the CLI. It sends nothing to
+  Bing or IndexNow, needs no API key and records no plan, so it is not a write.
+- Refuse an IndexNow key-file check whose host resolves to a non-public address, and
+  ignore proxy environment variables on the MCP path. `foo.localhost` and
+  `127.0.0.1.nip.io` are well-formed multi-label names, and the check is the one request
+  an MCP client can make the server send to a host it named.
+- Let a tool declare `openWorldHint` itself, so `bing_indexnow_key_plan` can admit that
+  it reaches an arbitrary host while the Bing reads stay closed-world.
+- Record `UrlWithCrawlIssues`, `UrlInfo`, `QueryStats` and `RankAndTrafficStats` in
+  `docs/api-surface.md` with their Microsoft sources. Bing returns no CTR field and no
+  robots-directive or content-changed property; the docs now say so.
 - Add `BING_WM_ALLOW_WRITES` (default `true`) to choose the write path. With it on,
   the MCP server advertises one-step `bing_<operation>` tools and the CLI gains
   `bing-wm write`, `submit-url`, `submit-urls`, `submit-sitemap`, `block-url` and
@@ -18,7 +39,7 @@
 - Report `POLICY_DENIED` rather than `AUTH_FAILED` for a write attempted while
   `BING_WM_ALLOW_WRITES=false` and no API key is set.
 - Implement all 59 supported Bing Webmaster Tools API methods.
-- Add the CLI and a 62-tool MCP stdio server with no apply capability over MCP.
+- Add the CLI and the MCP stdio server with no apply capability over MCP.
 - Put all Bing mutations and IndexNow submission behind durable, expiring plans.
 - Add auditing, unknown-outcome protection, site policy, and local limits.
 - Add protocol-correct IndexNow key verification and batch validation.
