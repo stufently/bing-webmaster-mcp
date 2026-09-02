@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime, timedelta
 
@@ -8,6 +9,7 @@ import pytest
 from bing_webmaster_mcp.audit import AuditLog
 from bing_webmaster_mcp.errors import InvalidRequest, PlanAlreadyApplied, PlanNotFound
 from bing_webmaster_mcp.plans import PlanStore
+from bing_webmaster_mcp.render import REDACTED
 
 
 def test_plan_persists_with_expiry_and_owner_only_mode(tmp_path) -> None:
@@ -151,3 +153,55 @@ def test_recover_lock_refuses_a_live_owner_or_missing_lock(
     lock.write_bytes(b"\xff")
     with pytest.raises(InvalidRequest, match="malformed"):
         store.recover_lock(plan.plan_id, AuditLog(tmp_path))
+
+
+ROLE_ARGS = {
+    "site_url": "https://a.example",
+    "delegated_url": "https://a.example",
+    "user_email": "x@y.example",
+    "authentication_code": "auth-secret-value",
+    "is_administrator": False,
+    "is_read_only": True,
+}
+
+
+def test_a_shown_plan_hides_the_verification_code_it_will_send(tmp_path) -> None:
+    """Showing a plan must not be a second way to read a secret the reads redact."""
+    store = PlanStore(tmp_path, ttl_seconds=60)
+    plan = store.create("add_site_roles", "https://a.example", dict(ROLE_ARGS), "delegate")
+
+    shown = store.get(plan.plan_id).public_dump()
+
+    assert shown["args"]["authentication_code"] == REDACTED
+    assert "auth-secret-value" not in json.dumps(shown)
+    assert shown["args"]["user_email"] == "x@y.example"
+    assert shown["plan_id"] == plan.plan_id
+    assert shown["state"] == "pending"
+
+
+def test_a_delegation_code_nested_in_a_role_object_is_hidden_too(tmp_path) -> None:
+    store = PlanStore(tmp_path, ttl_seconds=60)
+    args = {"site_url": "https://a.example", "site_role": {"DelegatedCode": "delegated-secret"}}
+    plan = store.create("remove_site_role", "https://a.example", args, "remove role")
+
+    shown = store.get(plan.plan_id).public_dump()
+
+    assert shown["args"]["site_role"]["DelegatedCode"] == REDACTED
+    assert "delegated-secret" not in json.dumps(shown)
+
+
+def test_the_stored_plan_keeps_the_real_value_so_it_can_still_be_applied(tmp_path) -> None:
+    """Redaction is a view. A plan that lost its code could never be applied."""
+    store = PlanStore(tmp_path, ttl_seconds=60)
+    plan = store.create("add_site_roles", "https://a.example", dict(ROLE_ARGS), "delegate")
+
+    assert store.get(plan.plan_id).args["authentication_code"] == "auth-secret-value"
+
+
+def test_an_operator_can_reveal_the_code_explicitly(tmp_path) -> None:
+    store = PlanStore(tmp_path, ttl_seconds=60)
+    plan = store.create("add_site_roles", "https://a.example", dict(ROLE_ARGS), "delegate")
+
+    revealed = store.get(plan.plan_id).public_dump(reveal_secrets=True)
+
+    assert revealed["args"]["authentication_code"] == "auth-secret-value"

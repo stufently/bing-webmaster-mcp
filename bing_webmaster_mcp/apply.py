@@ -13,6 +13,7 @@ from .errors import BingWebmasterError, PlanUnknownOutcome
 from .limits import RateLimiter
 from .ops import indexnow
 from .plans import PlanStore, create_write_plan
+from .render import redact, secret_values
 from .writes import prepare_write
 
 
@@ -127,7 +128,10 @@ async def apply_plan(
             "applied": True,
             "plan_id": plan_id,
             "operation": plan.operation,
-            "result": result,
+            # A write leaves by this door, and reads leave by ``ops._common.fetch``.
+            # Both are redacted, so neither is the way a code Bing echoed back reaches a
+            # transcript. The literals we sent are hidden too, not only the named fields.
+            "result": redact(result, secret_values(prepared.body)),
         }
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Iterable
 from typing import Any
 
 UNTRUSTED_FIELDS = frozenset(
@@ -17,7 +18,17 @@ UNTRUSTED_FIELDS = frozenset(
 # reports, so these are redacted everywhere by default and revealed only when an
 # operator at the CLI asks for them by name.
 SECRET_FIELDS = frozenset({"AuthenticationCode", "DelegatedCode", "DnsVerificationCode"})
+# The same three values under the spellings a request uses: Bing's response says
+# ``AuthenticationCode``, its request body says ``authenticationCode`` and a plan's
+# recorded arguments say ``authentication_code``. One secret with three names would need
+# three lists to stay in step, so the name is compared with its underscores removed and
+# its case folded instead.
+_SECRET_KEYS = frozenset(name.replace("_", "").casefold() for name in SECRET_FIELDS)
 REDACTED = "[redacted: verification secret]"
+# A literal shorter than this is not searched for in free text. Bing's codes are long
+# hex strings; replacing every occurrence of a two-character value would shred an error
+# message without hiding anything that was ever a credential.
+_MIN_SECRET_LENGTH = 4
 _MAX_LENGTH = 2000
 _KEEP_CONTROLS = {"\n", "\t"}
 _TRUNCATED = "… [truncated]"
@@ -43,16 +54,75 @@ def _is_present(value: Any) -> bool:
     return value is not None and value != ""
 
 
-def redact_secrets(value: Any) -> Any:
-    """Replace every verification secret in a response with a self-describing marker."""
+def _is_secret_key(key: Any) -> bool:
+    return isinstance(key, str) and key.replace("_", "").casefold() in _SECRET_KEYS
+
+
+def secret_values(value: Any) -> frozenset[str]:
+    """Every verification secret carried as a value by a request body or plan arguments.
+
+    Field names hide a secret we are handing back. This finds the other direction: the
+    literal we ourselves sent, so it can be recognised again in text that was never keyed
+    - an upstream error message quoting the code it rejected.
+    """
+    found: set[str] = set()
+
+    def walk(node: Any, inside_secret: bool) -> None:
+        if isinstance(node, dict):
+            for key, item in node.items():
+                walk(item, inside_secret or _is_secret_key(key))
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, inside_secret)
+        elif inside_secret and isinstance(node, str) and len(node) >= _MIN_SECRET_LENGTH:
+            found.add(node)
+
+    walk(value, False)
+    return frozenset(found)
+
+
+def redact_text(value: str, secrets: Iterable[str]) -> str:
+    """Replace known secret literals wherever they appear in a piece of free text."""
+    for secret in secrets:
+        if len(secret) >= _MIN_SECRET_LENGTH:
+            value = value.replace(secret, REDACTED)
+    return value
+
+
+def redact(value: Any, secrets: Iterable[str] = ()) -> Any:
+    """Hide every verification secret leaving this process, by name and by value.
+
+    This is the exit boundary: a response, a write result, an error message and anything
+    written to the audit trail goes through it. Redacting only where a secret is expected
+    means covering the places somebody thought of, and the code Bing quotes back inside
+    an error string is exactly the place nobody thinks of.
+    """
+    literals = tuple(
+        sorted(
+            {secret for secret in secrets if len(secret) >= _MIN_SECRET_LENGTH},
+            key=len,
+            reverse=True,
+        )
+    )
+    return _redact(value, literals)
+
+
+def _redact(value: Any, literals: tuple[str, ...]) -> Any:
     if isinstance(value, dict):
         return {
-            key: REDACTED if key in SECRET_FIELDS and _is_present(item) else redact_secrets(item)
+            key: REDACTED if _is_secret_key(key) and _is_present(item) else _redact(item, literals)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [redact_secrets(item) for item in value]
+        return [_redact(item, literals) for item in value]
+    if isinstance(value, str) and literals:
+        return redact_text(value, literals)
     return value
+
+
+def redact_secrets(value: Any) -> Any:
+    """Replace every verification secret in a response with a self-describing marker."""
+    return redact(value)
 
 
 def sanitize(value: Any) -> Any:

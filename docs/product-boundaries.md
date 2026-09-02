@@ -27,6 +27,25 @@ These are dated product decisions, not missing implementation work.
   be model-controlled: text a read tool returned could then talk a model into fetching a
   code and writing it into a transcript, a log or a report. The operator who needs one is
   the person publishing the proof on the site, and they are at a terminal.
+- **2026-09-02 — a plan keeps its secret on disk and hides it in every view.** An
+  `add_site_roles` plan cannot be applied without the `authentication_code` it records,
+  so the record is not scrubbed. What changed is that showing a plan is no longer a way
+  to read one back: `bing_plan_show`, `bing_plan_list`, `bing-wm plan show|list` and the
+  `plan apply` confirmation all render through `Plan.public_dump()`, and only the CLI can
+  ask to reveal. The alternative — dropping the code from the record and asking for it
+  again at apply time — was rejected: it would put the credential back on the operator's
+  command line at the exact moment the plan exists to avoid retyping it, and a plan whose
+  arguments are not what will be sent is no longer a review artifact.
+- **2026-09-02 — a read's shape is declared, never inferred.** Deciding structurally
+  whether a response carried rows cannot work: `GetCrawlSettings` returns one record
+  whose `CrawlRate` is an hourly-rate array and `GetLinkCounts` returns a container whose
+  `Links` array is the rows, and both look like "a mapping with an empty list in it".
+  Each read therefore carries `@row_read` or `@single_record`, and single-record reads
+  are exempt from the emptiness test rather than being given cleverer heuristics. Naming
+  the row-bearing field of every container read was considered and refused for the
+  reads Microsoft's pages do not document: `Links` is verified for `GetLinkCounts`, the
+  rest would be invention, and the generic "any list-valued field" test is correct for
+  both shapes once single records are out of it.
 - **2026-09-02 — no attempt to resolve an empty response.** Nothing in the API says
   whether an empty answer means "nothing to report" or "not reported", and this server
   does not guess: it labels the response `empty_response` and leaves the ambiguity

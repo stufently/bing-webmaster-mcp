@@ -3,14 +3,34 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from ..client import BingClient
+from ..emptiness import ROWS, SHAPE_ATTRIBUTE, SINGLE_RECORD
 from ..errors import InvalidRequest
 from ..render import redact_secrets, sanitize
 from ..urls import validate_http_url
 
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+
+
+def row_read[Read: Callable[..., Any]](function: Read) -> Read:
+    """Declare that this read returns rows, so an empty answer is silence to be labelled."""
+    setattr(function, SHAPE_ATTRIBUTE, ROWS)
+    return function
+
+
+def single_record[Read: Callable[..., Any]](function: Read) -> Read:
+    """Declare that this read returns one record, whose own arrays are not rows.
+
+    ``GetCrawlSettings`` carries its ``CrawlRate`` array inside a single record;
+    ``GetUrlSubmissionQuota`` carries counts. Judging those structurally would report a
+    measurement as "Bing returned nothing", which is the same misreading the empty-read
+    label exists to prevent, pointed the other way.
+    """
+    setattr(function, SHAPE_ATTRIBUTE, SINGLE_RECORD)
+    return function
 
 
 def normalise_site(site_url: str) -> str:

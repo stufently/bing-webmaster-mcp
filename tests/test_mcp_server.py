@@ -332,3 +332,88 @@ def test_the_url_info_descriptions_explain_a_zero_http_status() -> None:
         description = mcp_server.TOOL_SPECS[name].description
         assert "http_status_reported" in description
         assert "HttpStatus is 0" in description
+
+
+ROLE_ARGS = {
+    "site_url": "https://a.example",
+    "delegated_url": "https://a.example",
+    "user_email": "x@y.example",
+    "authentication_code": "auth-secret-value",
+    "is_administrator": False,
+    "is_read_only": True,
+}
+
+
+def _record_role_plan(tmp_path) -> str:
+    from bing_webmaster_mcp.plans import PlanStore
+
+    store = PlanStore(tmp_path, ttl_seconds=600)
+    return store.create("add_site_roles", "https://a.example", dict(ROLE_ARGS), "delegate").plan_id
+
+
+async def test_showing_a_plan_does_not_hand_back_the_verification_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Redacting the reads is pointless if a plan is a second door to the same secret."""
+    monkeypatch.setenv("BING_WM_API_KEY", "test-key")
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+    plan_id = _record_role_plan(tmp_path)
+
+    result = await mcp_server.call_tool("bing_plan_show", {"plan_id": plan_id})
+
+    assert result.is_error is not True
+    assert "auth-secret-value" not in result.content[0].text
+    args = result.structured_content["result"]["args"]
+    assert args["authentication_code"] == "[redacted: verification secret]"
+    assert args["user_email"] == "x@y.example"
+
+
+async def test_listing_plans_does_not_hand_back_the_verification_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("BING_WM_API_KEY", "test-key")
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+    _record_role_plan(tmp_path)
+
+    result = await mcp_server.call_tool("bing_plan_list", {})
+
+    assert result.is_error is not True
+    assert "auth-secret-value" not in result.content[0].text
+    listed = result.structured_content["result"]
+    assert listed[0]["args"]["authentication_code"] == "[redacted: verification secret]"
+
+
+def test_the_plan_inspection_descriptions_say_the_secrets_are_withheld() -> None:
+    for name in ("bing_plan_list", "bing_plan_show"):
+        description = mcp_server.TOOL_SPECS[name].description.casefold()
+        assert "redacted" in description
+
+
+async def test_a_single_record_read_is_not_reported_as_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CrawlRate is an hourly-rate array inside one record, not rows Bing withheld."""
+
+    async def settings(name: str, arguments: dict) -> dict:
+        return {"CrawlBoostAvailable": True, "CrawlBoostEnabled": False, "CrawlRate": []}
+
+    monkeypatch.setattr(mcp_server, "_call_read", settings)
+    result = await mcp_server.call_tool("bing_crawl_settings", {"site_url": "https://a.example"})
+
+    assert result.is_error is not True
+    assert "empty_response" not in result.structured_content
+    assert result.structured_content["result"]["CrawlRate"] == []
+
+
+async def test_a_row_read_returning_nothing_is_still_reported_as_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The single-record exemption must not switch the label off everywhere."""
+
+    async def empty(name: str, arguments: dict) -> list:
+        return []
+
+    monkeypatch.setattr(mcp_server, "_call_read", empty)
+    result = await mcp_server.call_tool("bing_crawl_issues", {"site_url": "https://a.example"})
+
+    assert result.structured_content["empty_response"]["measured"] is False

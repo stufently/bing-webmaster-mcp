@@ -26,6 +26,7 @@ from .errors import (
     QuotaExceeded,
 )
 from .ops._common import normalise_site
+from .render import redact_secrets
 from .writes import prepare_write
 
 _PLAN_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -101,6 +102,20 @@ class Plan(BaseModel):
 
     def is_expired(self, now: datetime | None = None) -> bool:
         return (now or datetime.now(UTC)) >= self.expires_at
+
+    def public_dump(self, *, reveal_secrets: bool = False) -> dict[str, Any]:
+        """The plan as it may be shown, with the secrets in its arguments hidden.
+
+        The record on disk keeps the real values - the plan has to be appliable, and
+        ``add_site_roles`` cannot be sent without its ``authentication_code``. What
+        changes is that showing a plan is no longer a way to read one back: this is the
+        only serialization ``bing_plan_show``, ``bing_plan_list`` and the CLI use, and
+        only the CLI can pass ``reveal_secrets``, from an explicit operator flag.
+        """
+        data = self.model_dump(mode="json")
+        if not reveal_secrets:
+            data["args"] = redact_secrets(data["args"])
+        return data
 
 
 class PlanStore:

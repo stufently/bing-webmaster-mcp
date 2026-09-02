@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -22,6 +23,7 @@ from bing_webmaster_mcp.errors import (
 )
 from bing_webmaster_mcp.limits import RateLimiter
 from bing_webmaster_mcp.plans import PlanStore, create_write_plan
+from bing_webmaster_mcp.render import REDACTED
 from bing_webmaster_mcp.writes import WRITE_OPS
 
 
@@ -635,3 +637,65 @@ async def test_an_unknown_outcome_keeps_its_state_and_names_its_plan(tmp_path) -
             )
     plan_id = caught.value.to_dict()["details"]["plan_id"]
     assert PlanStore(tmp_path, settings.plan_ttl_seconds).get(plan_id).state == "unknown_outcome"
+
+
+ROLE_CODE = "auth-secret-value"
+ROLE_ARGS = {
+    "site_url": "https://a.example",
+    "delegated_url": "https://a.example",
+    "user_email": "x@y.example",
+    "authentication_code": ROLE_CODE,
+    "is_administrator": False,
+    "is_read_only": True,
+}
+
+
+async def test_a_write_result_echoing_the_code_leaves_redacted(tmp_path) -> None:
+    """The write result is an exit too, and nothing redacted it before this change."""
+    transport = bing_transport(
+        {
+            "AddSiteRoles": {
+                "AuthenticationCode": ROLE_CODE,
+                "Message": f"accepted {ROLE_CODE}",
+            }
+        }
+    )
+    settings = fake_settings(tmp_path)
+    async with BingClient(settings, transport=transport) as client:
+        outcome = await execute_write(
+            "add_site_roles",
+            dict(ROLE_ARGS),
+            settings=settings,
+            client=client,
+            audit=AuditLog(settings.state_dir),
+            limiter=RateLimiter(settings.state_dir, max_per_day=10),
+        )
+
+    assert outcome["applied"] is True
+    assert ROLE_CODE not in json.dumps(outcome, default=str)
+    assert outcome["result"]["AuthenticationCode"] == REDACTED
+    assert outcome["result"]["Message"] == f"accepted {REDACTED}"
+
+
+async def test_the_audit_trail_never_receives_the_code_from_a_failed_write(tmp_path) -> None:
+    """A rejection quoting the code would otherwise be written to disk verbatim."""
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            400, json={"Message": f"code {ROLE_CODE} rejected"}, request=request
+        )
+    )
+    settings = fake_settings(tmp_path)
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(InvalidRequest):
+            await execute_write(
+                "add_site_roles",
+                dict(ROLE_ARGS),
+                settings=settings,
+                client=client,
+                audit=AuditLog(settings.state_dir),
+                limiter=RateLimiter(settings.state_dir, max_per_day=10),
+            )
+
+    written = (settings.state_dir / "audit.jsonl").read_text()
+    assert ROLE_CODE not in written
+    assert REDACTED in written

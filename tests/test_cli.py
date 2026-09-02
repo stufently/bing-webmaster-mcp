@@ -350,3 +350,79 @@ def test_url_info_labels_a_status_bing_did_not_report(tmp_path, monkeypatch) -> 
     result = CliRunner().invoke(cli.main, command)
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["http_status_reported"] is False
+
+
+ROLE_CODE = "auth-secret-value"
+ROLE_ARGS = {
+    "site_url": "https://a.example",
+    "delegated_url": "https://a.example",
+    "user_email": "x@y.example",
+    "authentication_code": ROLE_CODE,
+    "is_administrator": False,
+    "is_read_only": True,
+}
+
+
+def _role_plan(tmp_path, monkeypatch):
+    settings = fake_settings(tmp_path)
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(cli, "_transport", lambda: bing_transport({"AddSiteRoles": None}))
+    return cli.run_async(cli._create_plan("add_site_roles", dict(ROLE_ARGS)))
+
+
+def test_plan_show_redacts_the_verification_code(tmp_path, monkeypatch) -> None:
+    plan = _role_plan(tmp_path, monkeypatch)
+    result = CliRunner().invoke(cli.main, ["plan", "show", plan.plan_id, "--json"])
+    assert result.exit_code == 0, result.output
+    assert ROLE_CODE not in result.output
+    args = json.loads(result.stdout)["args"]
+    assert args["authentication_code"] == "[redacted: verification secret]"
+
+
+def test_plan_list_redacts_the_verification_code(tmp_path, monkeypatch) -> None:
+    _role_plan(tmp_path, monkeypatch)
+    result = CliRunner().invoke(cli.main, ["plan", "list", "--json"])
+    assert result.exit_code == 0, result.output
+    assert ROLE_CODE not in result.output
+
+
+def test_the_operator_can_reveal_a_plan_secret_with_the_same_flag(tmp_path, monkeypatch) -> None:
+    plan = _role_plan(tmp_path, monkeypatch)
+    result = CliRunner().invoke(
+        cli.main, ["plan", "show", plan.plan_id, "--reveal-verification-codes", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["args"]["authentication_code"] == ROLE_CODE
+
+
+def test_the_apply_prompt_redacts_the_code_it_is_about_to_send(tmp_path, monkeypatch) -> None:
+    """The approval prompt is read aloud and pasted into tickets; the email is enough."""
+    plan = _role_plan(tmp_path, monkeypatch)
+    result = CliRunner().invoke(cli.main, ["plan", "apply", plan.plan_id], input="n\n")
+    assert result.exit_code == 1
+    assert ROLE_CODE not in result.output
+    assert "[redacted: verification secret]" in result.output
+    assert "x@y.example" in result.output
+
+
+def test_the_apply_prompt_can_still_show_the_code_on_request(tmp_path, monkeypatch) -> None:
+    plan = _role_plan(tmp_path, monkeypatch)
+    result = CliRunner().invoke(
+        cli.main,
+        ["plan", "apply", plan.plan_id, "--reveal-verification-codes"],
+        input="n\n",
+    )
+    assert result.exit_code == 1
+    assert ROLE_CODE in result.output
+
+
+def test_a_single_record_read_prints_no_silence_note(tmp_path, monkeypatch) -> None:
+    """GetCrawlSettings answers one record; its empty CrawlRate is not a missing row."""
+    settings = {"CrawlBoostAvailable": True, "CrawlBoostEnabled": False, "CrawlRate": []}
+    transport = bing_transport({"GetCrawlSettings": settings})
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: transport)
+    result = CliRunner().invoke(cli.main, ["crawl", "settings", "a.example", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == settings
+    assert "not a measurement" not in result.stderr.casefold()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -15,6 +16,7 @@ from bing_webmaster_mcp.errors import (
     RateLimited,
     UpstreamUnavailable,
 )
+from bing_webmaster_mcp.render import REDACTED
 
 
 async def test_get_unwraps_decodes_and_authenticates(tmp_path) -> None:
@@ -126,3 +128,43 @@ async def test_server_error_on_a_read_stays_retryable(tmp_path) -> None:
     async with BingClient(fake_settings(tmp_path), transport=transport) as client:
         with pytest.raises(UpstreamUnavailable):
             await client.call("GetUserSites")
+
+
+SUBMITTED_CODE = "auth-secret-value"
+
+
+async def test_an_upstream_error_quoting_our_own_code_is_scrubbed(tmp_path) -> None:
+    """Bing's words about our request travel to the transcript, the log and the terminal."""
+    transport = error_transport(
+        400,
+        {"ErrorCode": 400, "Message": f"authenticationCode {SUBMITTED_CODE} was rejected"},
+    )
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        with pytest.raises(InvalidRequest) as raised:
+            await client.call("AddSiteRoles", body={"authenticationCode": SUBMITTED_CODE})
+
+    rendered = json.dumps(raised.value.to_dict())
+    assert SUBMITTED_CODE not in rendered
+    assert REDACTED in raised.value.message
+    assert "was rejected" in raised.value.message
+
+
+async def test_a_delegation_code_nested_in_a_request_body_is_scrubbed_too(tmp_path) -> None:
+    transport = error_transport(400, {"Message": f"role {SUBMITTED_CODE} is unknown"})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        with pytest.raises(InvalidRequest) as raised:
+            await client.call(
+                "RemoveSiteRole", body={"siteRole": {"DelegatedCode": SUBMITTED_CODE}}
+            )
+
+    assert SUBMITTED_CODE not in json.dumps(raised.value.to_dict())
+
+
+async def test_an_error_on_a_request_carrying_no_secret_reads_normally(tmp_path) -> None:
+    """Scrubbing must not turn every error message into markers."""
+    transport = error_transport(400, {"Message": "siteUrl https://a.example is not registered"})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        with pytest.raises(InvalidRequest) as raised:
+            await client.call("AddSite", body={"siteUrl": "https://a.example"})
+
+    assert raised.value.message == "AddSite: siteUrl https://a.example is not registered"

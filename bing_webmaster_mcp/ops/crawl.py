@@ -4,7 +4,7 @@ from collections import Counter
 from typing import Any
 
 from ..client import BingClient
-from ._common import fetch, normalise_site
+from ._common import fetch, normalise_site, row_read, single_record
 
 FILTER_FIELDS = (
     "CrawlDateFilter",
@@ -174,17 +174,20 @@ def annotate_http_status(row: Any) -> Any:
     return annotated
 
 
+@single_record
 async def url_info(client: BingClient, site_url: str, url: str) -> dict[str, Any]:
     row = await fetch(client, "GetUrlInfo", {"siteUrl": normalise_site(site_url), "url": url})
     return annotate_http_status(row)
 
 
+@single_record
 async def url_traffic_info(client: BingClient, site_url: str, url: str) -> dict[str, Any]:
     return await fetch(
         client, "GetUrlTrafficInfo", {"siteUrl": normalise_site(site_url), "url": url}
     )
 
 
+@row_read
 async def children_url_info(
     client: BingClient,
     site_url: str,
@@ -212,6 +215,7 @@ async def children_url_info(
     return [annotate_http_status(row) for row in rows]
 
 
+@row_read
 async def children_url_traffic_info(
     client: BingClient, site_url: str, url: str, page: int = 0
 ) -> list[dict[str, Any]]:
@@ -222,24 +226,29 @@ async def children_url_traffic_info(
     )
 
 
+@row_read
 async def crawl_stats(client: BingClient, site_url: str) -> list[dict[str, Any]]:
     return await fetch(client, "GetCrawlStats", {"siteUrl": normalise_site(site_url)})
 
 
+@row_read
 async def crawl_issues(client: BingClient, site_url: str) -> dict[str, Any]:
     """Crawl issues with per-category counts, keeping every raw field Bing returned."""
     rows = await fetch(client, "GetCrawlIssues", {"siteUrl": normalise_site(site_url)})
     return summarise_crawl_issues(rows)
 
 
+@single_record
 async def crawl_settings(client: BingClient, site_url: str) -> dict[str, Any]:
     return await fetch(client, "GetCrawlSettings", {"siteUrl": normalise_site(site_url)})
 
 
+@row_read
 async def fetched_urls(client: BingClient, site_url: str) -> list[dict[str, Any]]:
     return await fetch(client, "GetFetchedUrls", {"siteUrl": normalise_site(site_url)})
 
 
+@single_record
 async def fetched_url_details(client: BingClient, site_url: str, url: str) -> dict[str, Any]:
     return await fetch(
         client, "GetFetchedUrlDetails", {"siteUrl": normalise_site(site_url), "url": url}

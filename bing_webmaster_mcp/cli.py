@@ -17,7 +17,7 @@ from .apply import apply_plan, execute_write
 from .audit import AuditLog
 from .client import BingClient
 from .config import Settings
-from .emptiness import EMPTY_RESPONSE_NOTE, returned_no_rows
+from .emptiness import EMPTY_RESPONSE_NOTE, read_shape, returned_no_rows
 from .errors import BingWebmasterError, InvalidRequest
 from .limits import RateLimiter
 from .ops import (
@@ -34,7 +34,7 @@ from .ops import (
     traffic,
 )
 from .plans import Plan, PlanStore, create_write_plan
-from .render import sanitize_text
+from .render import redact_secrets, sanitize_text
 from .writes import WRITE_OPS, prepare_write
 
 
@@ -122,7 +122,7 @@ async def _read(function: Callable[..., Awaitable[Any]], *args: Any) -> Any:
     # On stderr, so it reaches a person reading the terminal without getting into the
     # JSON a script is parsing. Only reads are labelled: a write that returns nothing
     # returns nothing because it had nothing to say.
-    if returned_no_rows(result):
+    if returned_no_rows(result, read_shape(function)):
         click.echo(f"note: {EMPTY_RESPONSE_NOTE}", err=True)
     return result
 
@@ -186,15 +186,20 @@ def _plan_payload(plan: Plan) -> dict[str, Any]:
 _REVIEW_STRING_LIMIT = 200
 
 
-def _review(plan: Plan) -> str:
+def _review(plan: Plan, reveal_secrets: bool = False) -> str:
     """Render what the plan actually sends.
 
     This prompt is the security boundary for an agent-authored change, so it must show
     the prepared request, not only the one-line summary: for the complex-object writes
-    the summary names the site and nothing about the payload.
+    the summary names the site and nothing about the payload. The verification secrets
+    inside that payload are redacted, because approving a delegation needs the email and
+    the site, not the credential - and this text is read aloud, screenshotted and pasted
+    into tickets. ``--reveal-verification-codes`` prints them for the operator who is
+    checking exactly that.
     """
     prepared = prepare_write(plan.operation, plan.args)
-    body = json.dumps(_abbreviate(prepared.body), indent=2, ensure_ascii=False, sort_keys=True)
+    payload = prepared.body if reveal_secrets else redact_secrets(prepared.body)
+    body = json.dumps(_abbreviate(payload), indent=2, ensure_ascii=False, sort_keys=True)
     return f"{plan.summary}\n\n{prepared.method} request body:\n{body}"
 
 
@@ -817,22 +822,24 @@ def plan_indexnow(host: str, path: Path, key: str, key_location: str | None, as_
 
 
 @plan_group.command("list")
+@reveal_option
 @json_option
 @guarded
-def plan_list(as_json: bool) -> None:
+def plan_list(reveal_secrets: bool, as_json: bool) -> None:
     settings = _load_settings(require_api_key=False)
     plans = PlanStore(settings.state_dir, settings.plan_ttl_seconds).list()
-    emit([plan.model_dump(mode="json") for plan in plans], as_json)
+    emit([plan.public_dump(reveal_secrets=reveal_secrets) for plan in plans], as_json)
 
 
 @plan_group.command("show")
 @click.argument("plan_id")
+@reveal_option
 @json_option
 @guarded
-def plan_show(plan_id: str, as_json: bool) -> None:
+def plan_show(plan_id: str, reveal_secrets: bool, as_json: bool) -> None:
     settings = _load_settings(require_api_key=False)
     plan = PlanStore(settings.state_dir, settings.plan_ttl_seconds).get(plan_id)
-    emit(plan.model_dump(mode="json"), as_json)
+    emit(plan.public_dump(reveal_secrets=reveal_secrets), as_json)
 
 
 @plan_group.command("reject")
@@ -871,14 +878,15 @@ def plan_unlock(plan_id: str, yes: bool, as_json: bool) -> None:
 @plan_group.command("apply")
 @click.argument("plan_id")
 @click.option("--yes", is_flag=True, help="Skip the human confirmation prompt.")
+@reveal_option
 @json_option
 @guarded
-def plan_apply(plan_id: str, yes: bool, as_json: bool) -> None:
+def plan_apply(plan_id: str, yes: bool, reveal_secrets: bool, as_json: bool) -> None:
     settings = _load_settings(require_api_key=False)
     store = PlanStore(settings.state_dir, settings.plan_ttl_seconds)
     plan = store.ensure_pending(plan_id)
     if not yes:
-        click.confirm(f"{_review(plan)}\nApply this plan?", abort=True)
+        click.confirm(f"{_review(plan, reveal_secrets)}\nApply this plan?", abort=True)
 
     async def execute() -> dict[str, Any]:
         limiter = RateLimiter(

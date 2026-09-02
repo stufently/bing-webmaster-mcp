@@ -192,6 +192,11 @@ case you are in, so the server labels it for you:
   "Bing returned nothing for this read" and go find corroboration — a different endpoint
   on the same site, or the Bing Webmaster UI. `bing_crawl_stats` is usually the one that
   still answers.
+- **Reads that answer with a single record are never labelled** — `bing_url_info`,
+  `bing_url_traffic_info`, `bing_crawl_settings`, `bing_fetched_url_details`,
+  `bing_keyword` and the two quota reads. An array inside one of those, such as
+  `CrawlRate`, is a field of the record and not a row Bing withheld, so an empty
+  one is a reading. The absence of the label on those reads says nothing either way.
 - **`HttpStatus: 0`** in `bing_url_info` and `bing_children_url_info` is the same trap in
   one field: it is "no status reported", not `200`. The rows carry
   **`http_status_reported`** for exactly this reason. `IsPage: true` with
@@ -209,6 +214,19 @@ is deliberate and permanent — there is no tool argument that reveals them, and
 operator to paste one into the conversation defeats the point. An operator who needs a
 code to publish the proof reads it at their own terminal with
 `bing-wm sites list --reveal-verification-codes`, or in the Bing Webmaster UI.
+
+The same marker appears anywhere else a code could travel, and none of these is a way
+round the redaction:
+
+- **`bing_plan_show` and `bing_plan_list`.** An `add_site_roles` plan holds the
+  `authentication_code` it will send; the plan is still applied with the real value, but
+  you are shown the marker. Review the plan by its `user_email`, `delegated_url` and
+  site, which is what the decision actually turns on.
+- **A write's result, and any error Bing returns.** If Bing quotes back the code it
+  rejected, you get the marker in the message.
+
+If you find yourself needing a code to finish a task, the task belongs to the operator
+at their terminal. Say so; do not ask for the value.
 
 ## What the Bing API does not have
 

@@ -200,9 +200,17 @@ Verification secrets never leave the machine by accident. `GetUserSites` returns
 `AuthenticationCode` and `DnsVerificationCode` beside every site and `GetSiteRoles`
 returns `DelegatedCode`; whoever holds one can claim the site in another Bing account.
 All three are replaced with `[redacted: verification secret]` in every response, and the
-only way to see one is `bing-wm sites list|show|roles --reveal-verification-codes` typed
-by an operator. No MCP tool takes that argument, so no model — and no text a model read —
-can ask for a code.
+only way to see one is `--reveal-verification-codes` typed by an operator on
+`bing-wm sites list|show|roles` or `bing-wm plan show|list|apply`. No MCP tool takes that
+argument, so no model — and no text a model read — can ask for a code.
+
+Redaction is an exit boundary, not a step on the read path. The same filter covers a
+write's result, the arguments a plan records — an `add_site_roles` plan holds the
+`authentication_code` it will send, and showing the plan does not show the code — and
+Bing's own error text, in case Bing quotes back the code it rejected. The literals to
+hide come from the request body, so the cover does not depend on anyone predicting which
+field a secret will next arrive in. The plan record on disk keeps the real value; a plan
+that lost its code could not be applied.
 
 An empty answer is never presented as a measurement. Some of the older endpoints return
 an empty collection for accounts that demonstrably have data: `bing_link_counts`,
@@ -210,8 +218,11 @@ an empty collection for accounts that demonstrably have data: `bing_link_counts`
 `bing_crawl_stats` reported 1700 inbound links in the same minute. A read that returned
 no rows carries `empty_response: {rows_returned: 0, measured: false, note: …}` beside
 `result` over MCP, and prints the note on stderr at the CLI, so "Bing returned nothing"
-cannot be reported as "no problems found". `bing_url_info` labels the same trap in one
-field: `HttpStatus: 0` means Bing reports no status, not `200`, and the row says so with
+cannot be reported as "no problems found". Reads that answer with a single record —
+`bing_url_info`, `bing_crawl_settings`, the quotas, `bing_keyword` — are never labelled:
+an array inside one record, such as `CrawlRate`, is a field of that record
+and not a row Bing withheld. `bing_url_info` labels the same trap in one field:
+`HttpStatus: 0` means Bing reports no status, not `200`, and the row says so with
 `http_status_reported`.
 
 ## Coverage and references

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Close the two ways a verification secret still left the process after it was redacted
+  in reads. A plan keeps the arguments it will send, so `bing_plan_show`, `bing_plan_list`
+  and `bing-wm plan show|list` were handing back the `authentication_code` an
+  `add_site_roles` plan carries, and the `bing-wm plan apply` prompt printed it. All of
+  them now use a public serialization that redacts every secret in a plan's arguments,
+  nested ones included; `--reveal-verification-codes` shows them at the CLI, and no MCP
+  tool can ask. The record on disk still holds the real value, because a plan that lost
+  its code could never be applied.
+- Make the redaction an exit boundary rather than one point on the read path. A write's
+  result and, more importantly, Bing's own error text now pass through it: if Bing
+  quotes the `authenticationCode` it rejected, that message reached the caller, the MCP
+  error and the audit trail verbatim. The literals to hide are derived from the request
+  body itself, so a write that starts carrying a new secret is covered without anybody
+  remembering. A field name is matched with its underscores removed and its case folded,
+  so `AuthenticationCode`, `authenticationCode` and `authentication_code` are one secret
+  and not three lists to keep in step.
+- Stop reporting a single record as silence. The empty-read label judged any empty
+  list-valued field structurally, so `bing_crawl_settings` — whose `CrawlRate` is an
+  hourly-rate array inside one record — was labelled `empty_response` when Bing had
+  answered in full. Each read now declares whether it carries rows, and single-record
+  reads are exempt from the structural test entirely. A row read that returns nothing is
+  labelled exactly as before. A test refuses a read that declares nothing.
 - Redact the verification secrets Bing returns beside a site. `GetUserSites` sends
   `AuthenticationCode` and `DnsVerificationCode` and `GetSiteRoles` sends
   `DelegatedCode`; these are ownership proofs, and listing 74 sites was putting 148 of
@@ -19,8 +41,9 @@
   `InLinks: 1700` and `CrawlErrors: 4` in the same minute. Such a result now carries
   `empty_response: {rows_returned: 0, measured: false, note: …}` beside `result` over
   MCP, and the same note on stderr at the CLI. `result` keeps the shape Bing's response
-  had. A single record such as `bing_url_info` or a quota is never called empty: a zero
-  in it is a reading, not a silence.
+  had. A single record such as `bing_url_info` or a quota is never called empty — a zero
+  in it is a reading, not a silence — and which reads those are is declared per
+  operation, see the entry above.
 - Say when Bing reports no HTTP status for a URL. `GetUrlInfo` returns `HttpStatus: 0`
   with `IsPage: true` for URLs that answer 404 today, which reads as a healthy page.
   `bing_url_info` and `bing_children_url_info` now add `http_status_reported` to every

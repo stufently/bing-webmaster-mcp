@@ -34,7 +34,9 @@ The reviewed path stays available in both modes and is the only path when
 - `bing-wm plan submit-url|submit-urls|submit-sitemap|block-url|indexnow`
 - `bing-wm plan create OPERATION --args-json OBJECT` covers every write below.
 - `bing-wm plan list|show|reject|apply|unlock`; apply and unlock prompt unless `--yes`
-  is supplied.
+  is supplied. `list`, `show` and `apply` take `--reveal-verification-codes`, which
+  prints the ownership proofs a plan's arguments carry (see
+  [Verification secrets are redacted](#verification-secrets-are-redacted)).
 
 ## MCP read tools
 
@@ -65,12 +67,23 @@ from "Bing reported nothing", so the difference is labelled rather than guessed:
 - **MCP** — the result gains a sibling key beside `result`:
   `"empty_response": {"rows_returned": 0, "measured": false, "note": "…"}`. `result`
   keeps exactly the shape Bing's response had. The key is present only on read tools and
-  only when the response carried row collections and every one of them was empty; a
-  single record such as `bing_url_info` or a quota is never called empty, because a zero
-  in it is a reading.
+  only when the response carried row collections and every one of them was empty.
 - **CLI** — the same note goes to stderr, so a `--json` pipe stays parseable.
 
 Report it as "Bing returned nothing", never as "no problems found".
+
+Which reads can be labelled is declared per operation, not inferred from the payload.
+`GetCrawlSettings` answers one record whose `CrawlRate` is an hourly-rate array, and
+`GetLinkCounts` answers a container whose `Links` array is the rows; both are "a mapping
+with an empty list in it", and only the second is silence. Each read op therefore carries
+`@row_read` or `@single_record` from `ops/_common.py`, and single-record reads —
+`bing_url_info`, `bing_url_traffic_info`, `bing_crawl_settings`,
+`bing_fetched_url_details`, `bing_keyword`, `bing_submission_quota`,
+`bing_content_submission_quota`, and the CLI-only `sites show` — are exempt from the
+structural test entirely. A test in `tests/test_read_coverage.py` fails if a read
+declares neither, and a second test pins the single-record list, so adding a read means
+deciding which it is. An undeclared read falls back to `@row_read`: the fallback labels,
+because silence is the thing being warned about.
 
 ### Verification secrets are redacted
 
@@ -81,10 +94,34 @@ them. They are replaced with `[redacted: verification secret]` in every response
 every method, in both the MCP server and the CLI. A field Bing left `null` stays `null`
 rather than acquiring a marker that would imply a code exists.
 
-The only way to see one is `bing-wm sites list|show|roles --reveal-verification-codes`,
-typed by an operator who is about to publish the proof on the site. No MCP tool takes
-that flag and unknown tool arguments are refused, so no model — and no text a model
-read — can ask for a code.
+The only way to see one is `--reveal-verification-codes`, typed by an operator who is
+about to publish the proof on the site. It exists on `bing-wm sites list|show|roles` and
+on `bing-wm plan show|list|apply`. No MCP tool takes that flag and unknown tool arguments
+are refused, so no model — and no text a model read — can ask for a code.
+
+Redaction is the exit boundary, not a step on the read path. Everything leaving the
+process passes through `render.redact`:
+
+- **Reads** — `ops/_common.fetch`, so a method that starts returning a code tomorrow is
+  covered without anybody remembering to cover it.
+- **Plans** — `Plan.public_dump()`, used by `bing_plan_show`, `bing_plan_list` and the
+  CLI. An `add_site_roles` plan records the `authentication_code` it will send, so
+  showing the plan would otherwise be a second door to the same secret. The plan file on
+  disk keeps the real value, because a plan that lost its code could not be applied. The
+  `bing-wm plan apply` confirmation prompt redacts the prepared body for the same reason:
+  approving a delegation turns on the email and the site, not the credential.
+- **Write results and upstream errors** — `apply.apply_plan` and `client._map_error`.
+  Bing's own message about a rejected write can quote the code it rejected, and that text
+  reaches the MCP error, the terminal and the audit trail.
+
+Two spellings of the same fact are matched. A field name is compared with its underscores
+removed and its case folded, so `AuthenticationCode` (response), `authenticationCode`
+(request body) and `authentication_code` (plan arguments) are one secret rather than
+three lists to keep in step. Separately, the literal values a request body carries under
+those names are collected and searched for in any free text the same call produces — that
+is what catches a code Bing quoted back inside a message that named no field. A value
+shorter than four characters is not searched for: replacing every occurrence of a
+two-character string would shred a message without hiding a real credential.
 
 ### `HttpStatus: 0` means Bing reported no status
 

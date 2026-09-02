@@ -6,9 +6,13 @@ import pytest
 
 from bing_webmaster_mcp.emptiness import (
     EMPTY_RESPONSE_NOTE,
+    ROWS,
+    SINGLE_RECORD,
     empty_response_report,
+    read_shape,
     returned_no_rows,
 )
+from bing_webmaster_mcp.ops import crawl
 
 
 @pytest.mark.parametrize(
@@ -66,3 +70,32 @@ def test_the_note_forbids_reading_silence_as_a_clean_bill_of_health() -> None:
     note = EMPTY_RESPONSE_NOTE.casefold()
     assert "not a measurement" in note
     assert "no problems found" in note
+
+
+# The live GetCrawlSettings shape: one record whose CrawlRate is the hourly-rate array.
+CRAWL_SETTINGS = {"CrawlBoostAvailable": True, "CrawlBoostEnabled": False, "CrawlRate": []}
+
+
+def test_a_single_record_with_an_empty_array_field_is_not_silence() -> None:
+    """CrawlRate is a field of the one record Bing returned, not a list of findings."""
+    assert returned_no_rows(CRAWL_SETTINGS, SINGLE_RECORD) is False
+    assert empty_response_report(CRAWL_SETTINGS, SINGLE_RECORD) is None
+
+
+def test_the_same_payload_shape_is_silence_for_a_read_that_carries_rows() -> None:
+    """The shape cannot decide it: only the operation knows which of the two it is."""
+    assert returned_no_rows({"Links": [], "TotalPages": 0}, ROWS) is True
+
+
+def test_crawl_settings_declares_itself_a_single_record() -> None:
+    assert read_shape(crawl.crawl_settings) == SINGLE_RECORD
+    assert read_shape(crawl.crawl_stats) == ROWS
+
+
+def test_an_undeclared_read_still_labels_its_silence() -> None:
+    """The fallback warns; the coverage test is what refuses an undeclared read."""
+
+    async def undeclared() -> None:  # pragma: no cover - never called
+        return None
+
+    assert read_shape(undeclared) == ROWS

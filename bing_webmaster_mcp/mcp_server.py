@@ -32,7 +32,7 @@ from .apply import execute_write
 from .audit import AuditLog
 from .client import BingClient
 from .config import Settings
-from .emptiness import empty_response_report
+from .emptiness import empty_response_report, read_shape
 from .errors import BingWebmasterError, InternalError, InvalidRequest
 from .limits import RateLimiter
 from .ops import (
@@ -390,11 +390,18 @@ LOCAL_READ_SPECS: dict[str, ToolSpec] = {
 
 INSPECTION_SPECS: dict[str, ToolSpec] = {
     "bing_plan_list": ToolSpec(
-        "bing_plan_list", "List recorded plans and their current states.", _schema({}, ()), True
+        "bing_plan_list",
+        "List recorded plans and their current states. Verification and delegation"
+        " secrets in a plan's arguments are replaced with"
+        " '[redacted: verification secret]'; the plan still applies with the real value.",
+        _schema({}, ()),
+        True,
     ),
     "bing_plan_show": ToolSpec(
         "bing_plan_show",
-        "Show one recorded plan for review. This never applies it.",
+        "Show one recorded plan for review. This never applies it. Verification and"
+        " delegation secrets in its arguments are replaced with"
+        " '[redacted: verification secret]'; the plan still applies with the real value.",
         _schema({"plan_id": _STRING}, ("plan_id",)),
         True,
     ),
@@ -562,14 +569,18 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> Any:
         return await _call_read(name, arguments)
     if name == "bing_indexnow_key_plan":
         return await _call_indexnow_key_plan(arguments)
+    # ``public_dump`` and not ``model_dump``: a plan keeps the arguments it will send,
+    # and for add_site_roles one of them is the verification code. Redacting it in the
+    # reads that return a site while handing it back through the plan would have left
+    # the same secret one tool call away.
     if name == "bing_plan_list":
         settings = Settings.load(require_api_key=False)
         store = PlanStore(settings.state_dir, settings.plan_ttl_seconds)
-        return [plan.model_dump(mode="json") for plan in store.list()]
+        return [plan.public_dump() for plan in store.list()]
     if name == "bing_plan_show":
         settings = Settings.load(require_api_key=False)
         store = PlanStore(settings.state_dir, settings.plan_ttl_seconds)
-        return store.get(str(arguments["plan_id"])).model_dump(mode="json")
+        return store.get(str(arguments["plan_id"])).public_dump()
     prefix = "bing_plan_"
     if name.startswith(prefix) and name.removeprefix(prefix) in WRITE_OPS:
         return await _call_plan(name.removeprefix(prefix), arguments)
@@ -602,7 +613,7 @@ async def call_tool(name: str, arguments: dict[str, Any] | None) -> CallToolResu
         # ``result`` keeps exactly the shape Bing's response had while the one thing the
         # payload cannot say - that this is silence, not a zero - is said out loud.
         if name in READ_TOOLS:
-            report = empty_response_report(result)
+            report = empty_response_report(result, read_shape(READ_TOOLS[name]))
             if report is not None:
                 structured["empty_response"] = report
         return CallToolResult(

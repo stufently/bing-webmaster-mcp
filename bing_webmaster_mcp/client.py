@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Iterable
 from types import TracebackType
 from typing import Any
 
@@ -21,6 +22,7 @@ from .errors import (
     RateLimited,
     UpstreamUnavailable,
 )
+from .render import redact, redact_text, secret_values
 
 
 class _Throttle:
@@ -78,20 +80,26 @@ class BingClient:
         headers: dict[str, str] = {}
         self._auth.apply(query, headers)
         url = f"{self._settings.base_url.rstrip('/')}/{method}"
+        # The request body is the only way a verification secret enters a Bing call, so
+        # the literals to hide are derived here rather than passed in by every caller: a
+        # write that starts carrying a new secret is covered without anybody remembering.
+        secrets = secret_values(body) if body else frozenset()
 
         for attempt in range(1, self._settings.max_attempts + 1):
             await self._throttle.wait()
             try:
                 response = await self._request(url, query, headers, body)
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                error: BingWebmasterError = UpstreamUnavailable(f"{method}: {exc}")
+                error: BingWebmasterError = UpstreamUnavailable(
+                    redact_text(f"{method}: {exc}", secrets)
+                )
             except httpx.HTTPError as exc:
                 if mutating:
                     raise PlanUnknownOutcome(
                         f"{method}: request was sent but its outcome is unknown",
                         suggestion="inspect Bing and the audit log before creating a new plan",
                     ) from exc
-                error = UpstreamUnavailable(f"{method}: {exc}")
+                error = UpstreamUnavailable(redact_text(f"{method}: {exc}", secrets))
             else:
                 if response.status_code < 400:
                     if not mutating:
@@ -112,7 +120,7 @@ class BingClient:
                         "the write may or may not have been applied",
                         suggestion="inspect Bing and the audit log before creating a new plan",
                     )
-                error = _map_error(method, response)
+                error = _map_error(method, response, secrets)
 
             if mutating or not error.retryable or attempt == self._settings.max_attempts:
                 raise error
@@ -140,16 +148,22 @@ def _decode_success(method: str, response: httpx.Response) -> Any:
     return decode(unwrap(payload))
 
 
-def _map_error(method: str, response: httpx.Response) -> BingWebmasterError:
+def _map_error(
+    method: str, response: httpx.Response, secrets: Iterable[str] = ()
+) -> BingWebmasterError:
     try:
         body = response.json()
     except ValueError:
         body = {}
     message = body.get("Message") if isinstance(body, dict) else None
-    text = f"{method}: {message or response.reason_phrase or 'request failed'}"
+    # Bing's own words about our request, and our request may have contained a
+    # credential. Whatever it quoted back is scrubbed before the message exists as an
+    # error, so the audit trail, the MCP error and the terminal all get the same text.
+    reported = message or response.reason_phrase or "request failed"
+    text = redact_text(f"{method}: {reported}", secrets)
     details = None
     if isinstance(body, dict) and "ErrorCode" in body:
-        details = {"ErrorCode": body["ErrorCode"]}
+        details = redact({"ErrorCode": body["ErrorCode"]}, secrets)
 
     if response.status_code in {401, 403}:
         return AuthFailed(

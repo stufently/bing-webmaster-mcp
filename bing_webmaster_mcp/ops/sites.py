@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..client import BingClient
-from ._common import bool_param, fetch, normalise_site
+from ._common import bool_param, fetch, normalise_site, row_read, single_record
 
 # ``reveal_secrets`` is a parameter of these operations and deliberately not of any MCP
 # tool: the MCP schemas do not offer it, and unknown tool arguments are refused, so a
@@ -12,10 +12,12 @@ from ._common import bool_param, fetch, normalise_site
 # site during onboarding.
 
 
+@row_read
 async def list_sites(client: BingClient, reveal_secrets: bool = False) -> list[dict[str, Any]]:
     return await fetch(client, "GetUserSites", reveal_secrets=reveal_secrets)
 
 
+@row_read
 async def site_roles(
     client: BingClient,
     site_url: str,
@@ -33,10 +35,12 @@ async def site_roles(
     )
 
 
+@row_read
 async def site_moves(client: BingClient, site_url: str) -> list[dict[str, Any]]:
     return await fetch(client, "GetSiteMoves", {"siteUrl": normalise_site(site_url)})
 
 
+@single_record
 async def show_site(
     client: BingClient, site_url: str, reveal_secrets: bool = False
 ) -> dict[str, Any] | None:

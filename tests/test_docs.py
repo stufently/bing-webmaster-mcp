@@ -122,3 +122,23 @@ def test_the_reveal_flag_and_the_redaction_are_documented() -> None:
     assert "AuthenticationCode" in operations
     assert "DnsVerificationCode" in operations
     assert "DelegatedCode" in operations
+
+
+def test_the_plan_and_error_exits_are_documented_as_redacted() -> None:
+    operations = (ROOT / "docs" / "operations.md").read_text()
+    assert "public_dump" in operations
+    assert "_map_error" in operations
+    skill = (ROOT / "SKILL.md").read_text()
+    assert "bing_plan_show" in skill
+
+
+def test_the_declared_read_shape_is_documented() -> None:
+    operations = (ROOT / "docs" / "operations.md").read_text()
+    assert "@row_read" in operations
+    assert "@single_record" in operations
+
+
+def test_the_two_new_boundaries_are_recorded_with_their_date() -> None:
+    boundaries = (ROOT / "docs" / "product-boundaries.md").read_text()
+    assert "a plan keeps its secret on disk and hides it in every view" in boundaries
+    assert "a read's shape is declared, never inferred" in boundaries
