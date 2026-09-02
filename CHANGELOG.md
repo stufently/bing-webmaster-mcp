@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Split a crawl issue Bing flagged `Code4xx` into `http_404` or `http_403` using the
+  `HttpCode` on the same row, beside the broad `http_4xx` rather than instead of it, so
+  a caller counting 4xx rows keeps counting all of them. Microsoft's flags enum has no
+  404 or 403 member, so this comes from the status code Bing itself reported and from
+  nothing else: without the `Code4xx` flag, or with any other 4xx code, no refinement is
+  added. Bing still reports no `noindex` anywhere in this API, and no category invents
+  one.
+
 - Add `SKILL.md`: the task recipes an agent needs to drive this server — onboarding a
   new site, a recurring crawl and traffic audit, when IndexNow replaces `submit_url` —
   together with the rules it must not work around.

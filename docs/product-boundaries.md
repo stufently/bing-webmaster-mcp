@@ -15,6 +15,12 @@ These are dated product decisions, not missing implementation work.
   makes a write repeatable by retrying the call: each retry records a new plan and sends
   the change again. The one-shot guarantee is per plan. Operators who need
   exactly-once semantics use the reviewed path, whose plan can only be applied once.
+- **2026-09-02 — no `noindex` crawl-issue category.** Microsoft's
+  `UrlWithCrawlIssues.CrawlIssues` flags enum has no such member, and nothing in this
+  API reports a `noindex` meta tag or an `X-Robots-Tag` header. A category derived from
+  anything else would be a guess wearing Bing's authority, so `bing_crawl_issues`
+  reports none. The 404/403 split is the opposite case: Bing sends the exact status in
+  `HttpCode` on the same row, so `http_404` and `http_403` are read off real data.
 - **2026-08-25 — no obsolete deep-link methods.** Microsoft marks
   `GetDeepLinkAlgoUrls`, `GetDeepLink`, and `UpdateDeepLink` obsolete.
 - **2026-08-25 — OAuth2 is designed for but not implemented.** API-key authentication

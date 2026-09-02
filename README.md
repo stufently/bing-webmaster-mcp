@@ -121,7 +121,10 @@ bing-wm crawl issues example.com --json
 The result carries Bing's rows unchanged plus a category breakdown built from
 Microsoft's `UrlWithCrawlIssues.CrawlIssues` flags — redirects, 4xx, 5xx, robots.txt
 blocks, malware, DNS and timeout errors — with a count per category, a count per raw
-`HttpCode`, and an `other` bucket so nothing Bing sends is dropped.
+`HttpCode`, and an `other` bucket so nothing Bing sends is dropped. A 4xx row is split
+further into `http_404` or `http_403` from its own `HttpCode`, alongside the broad
+`http_4xx` rather than instead of it. Bing has no `noindex` crawl-issue flag, so there
+is no such category and this project does not invent one.
 
 ### How do I check if Bing has indexed my page?
 

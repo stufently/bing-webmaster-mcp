@@ -61,13 +61,16 @@ Work outside in — the shape of the problem first, then the specific URLs.
      `redirect_301`, `redirect_302`, `http_4xx`, `http_5xx`, `blocked_by_robots_txt`,
      `contains_malware`, `important_url_blocked_by_robots_txt`, `dns_errors`,
      `timeout_errors`, plus `none` and `other`.
+   - A row flagged `http_4xx` also gets **`http_404` or `http_403`** when its own
+     `HttpCode` says so. These are a **subset** of `http_4xx`, not a replacement: every
+     4xx row still counts in `http_4xx`, so never add the three together. Any other 4xx
+     code (410, 451, …) stays in `http_4xx` alone — read it off `http_codes`.
    - The flags are a **bitmask**, so one URL can appear in several categories and the
      counts legitimately add up to more than `total`.
-   - `http_codes` counts the raw `HttpCode` field. This is where the 404-versus-403
-     distinction lives; Bing has no separate flag for either, and **no `noindex` flag at
-     all**. Nothing in this API reports a `noindex` meta tag or `X-Robots-Tag`: if a URL
-     is fetched cleanly yet stays out of search, that reason has to come from the page
-     itself, not from here.
+   - `http_codes` counts the raw `HttpCode` field, on every row and not only on 4xx
+     ones. Bing has **no `noindex` flag at all**. Nothing in this API reports a
+     `noindex` meta tag or `X-Robots-Tag`: if a URL is fetched cleanly yet stays out of
+     search, that reason has to come from the page itself, not from here.
    - `other` and `unknown_issue_bits` mean Bing sent something this project does not
      recognise. Report it; do not silently drop it.
    - Every row keeps the raw fields Bing returned, so you can always look past the

@@ -31,8 +31,17 @@ CRAWL_ISSUE_FLAGS: tuple[tuple[int, str, str], ...] = (
 )
 NO_ISSUE_CATEGORY = "none"
 OTHER_CATEGORY = "other"
+_CODE_4XX_BIT = 4
+# Microsoft's enum stops at "Code4xx", but the exact status code is on the same row in
+# ``HttpCode``. A 404 and a 403 are different problems - a dead page versus one the
+# server refuses to serve - so a row already flagged Code4xx is split by the code Bing
+# itself reported. This derives nothing: without the flag, or with any other code, no
+# refinement is added.
+CRAWL_ISSUE_HTTP_CODE_CATEGORIES: dict[int, str] = {403: "http_403", 404: "http_404"}
 CRAWL_ISSUE_CATEGORIES = tuple(
-    [category for _bit, _name, category in CRAWL_ISSUE_FLAGS] + [NO_ISSUE_CATEGORY, OTHER_CATEGORY]
+    [category for _bit, _name, category in CRAWL_ISSUE_FLAGS]
+    + sorted(CRAWL_ISSUE_HTTP_CODE_CATEGORIES.values())
+    + [NO_ISSUE_CATEGORY, OTHER_CATEGORY]
 )
 _KNOWN_BITS = sum(bit for bit, _name, _category in CRAWL_ISSUE_FLAGS)
 _BY_NAME = {name.casefold(): bit for bit, name, _category in CRAWL_ISSUE_FLAGS}
@@ -69,11 +78,25 @@ def _issue_bits(value: Any) -> int | None:
     return bits
 
 
-def categorise_issue(value: Any) -> tuple[list[str], int]:
+def _status_category(bits: int, http_code: Any) -> str | None:
+    """The 404/403 refinement of a ``Code4xx`` row, or ``None`` when it does not apply.
+
+    ``bool`` is excluded before the lookup because it is an ``int`` in Python and
+    ``True`` would otherwise never match anything but still read as a status code.
+    """
+    if not bits & _CODE_4XX_BIT or isinstance(http_code, bool) or not isinstance(http_code, int):
+        return None
+    return CRAWL_ISSUE_HTTP_CODE_CATEGORIES.get(http_code)
+
+
+def categorise_issue(value: Any, http_code: Any = None) -> tuple[list[str], int]:
     """Categories for one ``Issues`` value, plus any bits Microsoft has not documented.
 
     Nothing is dropped: an unreadable field, an unknown bit and a row with no flags all
-    land in a category of their own rather than vanishing from the counts.
+    land in a category of their own rather than vanishing from the counts. When the row
+    carries the ``Code4xx`` flag, its ``HttpCode`` adds ``http_404`` or ``http_403``
+    beside the broad ``http_4xx`` - beside it, not instead of it, so a caller counting
+    4xx rows keeps counting all of them.
     """
     bits = _issue_bits(value)
     if bits is None:
@@ -81,6 +104,9 @@ def categorise_issue(value: Any) -> tuple[list[str], int]:
     if bits == 0:
         return [NO_ISSUE_CATEGORY], 0
     categories = [category for bit, _name, category in CRAWL_ISSUE_FLAGS if bits & bit]
+    status = _status_category(bits, http_code)
+    if status is not None:
+        categories.append(status)
     unknown = bits & ~_KNOWN_BITS
     if unknown:
         categories.append(OTHER_CATEGORY)
@@ -104,9 +130,9 @@ def summarise_crawl_issues(rows: Any) -> dict[str, Any]:
             categories[OTHER_CATEGORY] += 1
             issues.append(row)
             continue
-        names, unknown = categorise_issue(row.get("Issues"))
-        categories.update(names)
         code = row.get("HttpCode")
+        names, unknown = categorise_issue(row.get("Issues"), code)
+        categories.update(names)
         if isinstance(code, int) and not isinstance(code, bool):
             http_codes[code] += 1
         entry: dict[str, Any] = {**row, "categories": names}

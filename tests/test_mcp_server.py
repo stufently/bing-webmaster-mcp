@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from bing_webmaster_mcp import mcp_server
@@ -211,6 +213,31 @@ async def test_the_local_indexnow_key_tool_needs_no_api_key(monkeypatch, tmp_pat
     assert result.is_error is not True
     plan = result.structured_content["result"]
     assert plan["key_location"] == f"https://a.example/{plan['key']}.txt"
+
+
+async def test_the_local_indexnow_key_tool_generates_a_key_of_its_own(
+    monkeypatch, tmp_path
+) -> None:
+    """Generating a key - not only inspecting one the operator already has - over MCP.
+
+    Two calls must not hand out the same secret, which is what a constant or a cached
+    key would do.
+    """
+    monkeypatch.delenv("BING_WM_API_KEY", raising=False)
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+    plans = []
+    for _ in range(2):
+        result = await mcp_server.call_tool(
+            "bing_indexnow_key_plan", {"host": "a.example", "check_key_file": False}
+        )
+        assert result.is_error is not True
+        plans.append(result.structured_content["result"])
+    for plan in plans:
+        assert plan["generated"] is True
+        assert re.fullmatch(r"[A-Za-z0-9-]{8,128}", plan["key"])
+        assert plan["key_file_contents"] == plan["key"]
+        assert plan["key_file"] == {"checked": False, "present": None}
+    assert plans[0]["key"] != plans[1]["key"]
 
 
 async def test_the_local_indexnow_key_tool_admits_it_reaches_an_outside_host() -> None:

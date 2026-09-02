@@ -203,6 +203,42 @@ def test_an_unreadable_issue_field_becomes_other_and_is_never_dropped(issues: An
     assert crawl.categorise_issue(issues) == (["other"], 0)
 
 
+@pytest.mark.parametrize(
+    ("issues", "http_code", "expected"),
+    [
+        (4, 404, ["http_4xx", "http_404"]),
+        (4, 403, ["http_4xx", "http_403"]),
+        (4, 410, ["http_4xx"]),
+        (4, "404", ["http_4xx"]),
+        (4, None, ["http_4xx"]),
+        (4, True, ["http_4xx"]),
+        (4 | 16, 404, ["http_4xx", "blocked_by_robots_txt", "http_404"]),
+        # No Code4xx flag, so the status code refines nothing: Bing did not call it a 4xx.
+        (8, 404, ["http_5xx"]),
+        (0, 404, ["none"]),
+    ],
+)
+def test_a_4xx_row_is_split_into_404_and_403_by_its_own_http_code(
+    issues: Any, http_code: Any, expected: list[str]
+) -> None:
+    categories, unknown = crawl.categorise_issue(issues, http_code)
+    assert sorted(categories) == sorted(expected)
+    assert unknown == 0
+
+
+def test_the_404_and_403_categories_are_a_subset_of_http_4xx_not_a_replacement() -> None:
+    rows = [
+        {"Url": "https://a.example/a", "HttpCode": 404, "Issues": 4},
+        {"Url": "https://a.example/b", "HttpCode": 404, "Issues": 4},
+        {"Url": "https://a.example/c", "HttpCode": 403, "Issues": 4},
+        {"Url": "https://a.example/d", "HttpCode": 410, "Issues": 4},
+    ]
+    summary = crawl.summarise_crawl_issues(rows)
+    assert summary["categories"] == {"http_403": 1, "http_404": 2, "http_4xx": 4}
+    assert summary["issues"][0]["categories"] == ["http_4xx", "http_404"]
+    assert summary["issues"][3]["categories"] == ["http_4xx"]
+
+
 def test_an_undocumented_bit_is_kept_as_other_alongside_the_known_ones() -> None:
     categories, unknown = crawl.categorise_issue(4 | 1024)
     assert categories == ["http_4xx", "other"]
@@ -221,6 +257,8 @@ def test_crawl_issue_summary_counts_categories_and_http_codes_without_losing_raw
     assert summary["categories"] == {
         "blocked_by_robots_txt": 1,
         "dns_errors": 1,
+        "http_403": 1,
+        "http_404": 1,
         "http_4xx": 2,
         "other": 1,
     }

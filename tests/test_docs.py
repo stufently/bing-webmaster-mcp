@@ -5,7 +5,8 @@ import struct
 import tomllib
 from pathlib import Path
 
-from bing_webmaster_mcp.mcp_server import tool_names
+from bing_webmaster_mcp.mcp_server import TOOL_SPECS, tool_names
+from bing_webmaster_mcp.ops.crawl import CRAWL_ISSUE_CATEGORIES
 from bing_webmaster_mcp.writes import WRITE_OPS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +36,18 @@ def test_every_mcp_tool_and_write_is_documented() -> None:
     assert not [name for name in WRITE_OPS if name not in operations]
 
 
+def test_every_crawl_issue_category_is_documented_where_a_reader_will_look() -> None:
+    """A category nobody can look up is a number without a meaning."""
+    texts = {
+        "docs/operations.md": (ROOT / "docs" / "operations.md").read_text(),
+        "SKILL.md": (ROOT / "SKILL.md").read_text(),
+        "the bing_crawl_issues tool description": TOOL_SPECS["bing_crawl_issues"].description,
+    }
+    for category in CRAWL_ISSUE_CATEGORIES:
+        for where, text in texts.items():
+            assert category in text, f"{category} is missing from {where}"
+
+
 def test_product_boundaries_record_every_deliberate_exclusion() -> None:
     text = (ROOT / "docs" / "product-boundaries.md").read_text()
     for term in (
@@ -47,6 +60,7 @@ def test_product_boundaries_record_every_deliberate_exclusion() -> None:
         "UpdateDeepLink",
         "OAuth2",
         "scheduler",
+        "noindex",
     ):
         assert term in text
     assert "2026-08-25" in text

@@ -57,9 +57,12 @@ The reviewed path stays available in both modes and is the only path when
 come from Microsoft's `UrlWithCrawlIssues.CrawlIssues` flags enum — `redirect_301`,
 `redirect_302`, `http_4xx`, `http_5xx`, `blocked_by_robots_txt`, `contains_malware`,
 `important_url_blocked_by_robots_txt`, `dns_errors`, `timeout_errors` — plus `none`
-for a row with no flags and `other` for anything unrecognised. Bing has no `noindex`
+for a row with no flags and `other` for anything unrecognised. Microsoft's enum stops
+at `Code4xx`, so a row carrying that flag is split by its own `HttpCode` field into
+`http_404` or `http_403`; those two are a subset of `http_4xx`, which still counts
+every 4xx row, and any other 4xx code is left to `http_codes`. Bing has no `noindex`
 crawl-issue flag, so there is no such category. `http_codes` counts the raw
-`HttpCode` field, which is where a 404/403 split lives.
+`HttpCode` field on every row.
 
 ## MCP local read-only tools
 

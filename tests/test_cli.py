@@ -246,6 +246,8 @@ def test_crawl_issues_prints_counts_above_the_table(tmp_path, monkeypatch) -> No
     assert result.exit_code == 0, result.output
     assert "2 URLs with crawl issues" in result.output
     assert "http_4xx: 2" in result.output
+    assert "http_404: 1" in result.output
+    assert "http_403: 1" in result.output
     assert "HTTP 404: 1" in result.output
     assert "categories" in result.output
 

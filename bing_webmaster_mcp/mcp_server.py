@@ -286,11 +286,14 @@ class ToolSpec:
 _READ_DETAIL = {
     "bing_crawl_issues": (
         " Returns {total, categories, http_codes, issues}: every raw row Bing sent, plus"
-        " counts per issue category (redirect_301, redirect_302, http_4xx, http_5xx,"
-        " blocked_by_robots_txt, contains_malware, important_url_blocked_by_robots_txt,"
-        " dns_errors, timeout_errors, none, other) and per raw HttpCode. Bing's flags are"
-        " a bitmask, so one URL can fall in several categories. Bing has no noindex"
-        " crawl-issue flag and no separate 404 or 403 flag: the status code is HttpCode."
+        " counts per issue category (redirect_301, redirect_302, http_4xx, http_404,"
+        " http_403, http_5xx, blocked_by_robots_txt, contains_malware,"
+        " important_url_blocked_by_robots_txt, dns_errors, timeout_errors, none, other)"
+        " and per raw HttpCode. Bing's flags are a bitmask, so one URL can fall in"
+        " several categories. Bing has no separate 404 or 403 flag: a row flagged"
+        " http_4xx also gets http_404 or http_403 from its own HttpCode field, so those"
+        " two are a subset of http_4xx and must not be added to it. Bing has no noindex"
+        " crawl-issue flag at all: this API reports no robots meta tag or X-Robots-Tag."
     ),
 }
 

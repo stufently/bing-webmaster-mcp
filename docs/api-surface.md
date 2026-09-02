@@ -117,7 +117,9 @@ must fit it.
   `DnsErrors` 128, `TimeOutErrors` 256. Source:
   <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.urlwithcrawlissues.crawlissues?view=bing-webmaster-dotnet>,
   fetched 2026-09-01. There is no `noindex` member and no separate 404 or 403 member;
-  the exact status code is the `HttpCode` field, not a flag.
+  the exact status code is the `HttpCode` field, not a flag. This project therefore
+  derives `http_404` and `http_403` from `HttpCode` on rows Bing itself flagged
+  `Code4xx`, and derives no `noindex` category from anything.
 
 - `UrlInfo` (returned by `GetUrlInfo`): `AnchorCount`, `DiscoveryDate`, `DocumentSize`,
   `HttpStatus`, `IsPage`, `LastCrawledDate`, `TotalChildUrlCount`, `Url`. Source:
