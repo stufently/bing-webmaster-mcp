@@ -146,3 +146,8 @@ def test_writes_are_allowed_unless_the_operator_turns_them_off(
     with pytest.raises(PolicyDenied) as caught:
         settings.check_writes_allowed()
     assert "BING_WM_ALLOW_WRITES" in caught.value.to_dict()["message"]
+
+
+def test_apikey_auth_declares_the_literal_it_puts_in_the_request() -> None:
+    """The redaction boundary asks the provider what it applied; nobody else knows."""
+    assert ApiKeyAuth("abc").secrets() == frozenset({"abc"})

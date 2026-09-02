@@ -123,6 +123,46 @@ is what catches a code Bing quoted back inside a message that named no field. A 
 shorter than four characters is not searched for: replacing every occurrence of a
 two-character string would shred a message without hiding a real credential.
 
+### The API key is redacted too, under its own marker
+
+Microsoft documents the API key only as a query-string parameter (`?apikey=…`), so every
+URL this client builds carries a live credential. Nothing in this project prints a URL,
+and `httpx` does not put one in its own exception messages — measured against
+`ConnectError`, `ReadTimeout`, `RemoteProtocolError` and `TooManyRedirects`, none of
+which quotes the address. The exposure is narrower than "any network error":
+
+- a message that came from **underneath** — a proxy, a TLS layer or a custom transport
+  naming the address it could not reach — and was formatted into the error text; or
+- **Bing's own error text**, if it quotes the request back.
+
+Both paths ended in the same four places: the MCP error, the CLI output, `exc.to_dict()`
+and the audit trail. The key is now hidden in all of them, in both `httpx` branches of
+`client.call`, in `client._map_error` and in the `details` an error carries.
+
+Three things this needs to get right, each pinned by a test:
+
+- **The wire form, not just the literal.** The key is a query parameter, so httpx encodes
+  it: one holding `/` or a space arrives as `%2F` or `+`, and a search for the value we
+  hold would walk past it. Both forms are matched, and the encoded one is asked of httpx
+  rather than guessed a second time here.
+- **Read on every call, after the credential is applied.** Reading it once when the
+  client is built would cover only the value it started with; a provider that refreshes a
+  token would go uncovered exactly when it rotates.
+- **No chained cause on a lost write.** `PlanUnknownOutcome` used to be raised `from` the
+  `httpx` exception. Its own message never quoted a URL, but `__cause__` did, and a
+  formatted traceback prints what `to_dict` cannot reach. The failure is now carried
+  scrubbed in `details.cause`, so the operator still learns what went wrong — in the
+  audit trail, where it is more use than in a traceback nobody kept.
+
+The marker is `[redacted: API credential]`, deliberately not the verification-secret one:
+a reader who finds "verification secret" where an API key leaked would misjudge both what
+escaped and what has to be rotated. The literal comes from `AuthProvider.secrets()` —
+the component that applied the credential is the only one that knows it, so a provider
+added later covers its own token by implementing that method, and no second list has to
+be kept in step. An error that carried no credential is unchanged, character for
+character; the cover must not turn ordinary failures into a wall of markers, and a test
+pins that.
+
 ### `HttpStatus: 0` means Bing reported no status
 
 `GetUrlInfo` returns `HttpStatus: 0` for a URL it holds crawl history for but no status

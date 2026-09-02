@@ -4,6 +4,7 @@ import json
 
 from bing_webmaster_mcp.render import (
     REDACTED,
+    REDACTED_CREDENTIAL,
     redact,
     redact_secrets,
     redact_text,
@@ -118,3 +119,13 @@ def test_the_boundary_hides_a_secret_by_name_and_by_value_at_once() -> None:
 
 def test_the_boundary_leaves_text_alone_when_no_literal_is_known() -> None:
     assert redact({"Message": "nothing to hide"}) == {"Message": "nothing to hide"}
+
+
+def test_a_marker_can_name_what_kind_of_credential_was_hidden() -> None:
+    """The API key is not a verification secret; labelling it as one would misinform."""
+    assert redact_text("reached ...?apikey=abcd", {"abcd"}, marker=REDACTED_CREDENTIAL) == (
+        f"reached ...?apikey={REDACTED_CREDENTIAL}"
+    )
+    assert redact({"ErrorCode": "abcd rejected"}, {"abcd"}, marker=REDACTED_CREDENTIAL) == {
+        "ErrorCode": f"{REDACTED_CREDENTIAL} rejected"
+    }

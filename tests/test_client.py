@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from datetime import UTC, datetime
 
 import httpx
@@ -16,7 +17,7 @@ from bing_webmaster_mcp.errors import (
     RateLimited,
     UpstreamUnavailable,
 )
-from bing_webmaster_mcp.render import REDACTED
+from bing_webmaster_mcp.render import REDACTED, REDACTED_CREDENTIAL
 
 
 async def test_get_unwraps_decodes_and_authenticates(tmp_path) -> None:
@@ -168,3 +169,152 @@ async def test_an_error_on_a_request_carrying_no_secret_reads_normally(tmp_path)
             await client.call("AddSite", body={"siteUrl": "https://a.example"})
 
     assert raised.value.message == "AddSite: siteUrl https://a.example is not registered"
+
+
+# Not a real key: no test may ever contain one, and this value is only ever compared
+# against text the client produced.
+FAKE_KEY = "FAKE-KEY-DO-NOT-USE-0123456789"
+
+
+def _key_settings(tmp_path):
+    return fake_settings(tmp_path, api_key=FAKE_KEY)
+
+
+async def test_a_connect_error_quoting_our_url_hides_the_key(tmp_path) -> None:
+    """The key rides in the query string, so any text quoting the URL carries it out."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"proxy could not reach {request.url}", request=request)
+
+    async with BingClient(
+        _key_settings(tmp_path), transport=httpx.MockTransport(handler)
+    ) as client:
+        with pytest.raises(UpstreamUnavailable) as raised:
+            await client.call("GetUserSites")
+
+    assert FAKE_KEY not in json.dumps(raised.value.to_dict())
+    assert REDACTED_CREDENTIAL in raised.value.message
+    assert "proxy could not reach" in raised.value.message
+
+
+async def test_a_read_error_quoting_our_url_hides_the_key(tmp_path) -> None:
+    """The second httpx branch is a separate message and needs its own cover."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError(f"read failed on {request.url}", request=request)
+
+    async with BingClient(
+        _key_settings(tmp_path), transport=httpx.MockTransport(handler)
+    ) as client:
+        with pytest.raises(UpstreamUnavailable) as raised:
+            await client.call("GetUserSites")
+
+    assert FAKE_KEY not in json.dumps(raised.value.to_dict())
+    assert REDACTED_CREDENTIAL in raised.value.message
+
+
+async def test_bing_quoting_our_url_back_hides_the_key(tmp_path) -> None:
+    transport = error_transport(
+        400,
+        {
+            "ErrorCode": f"rejected {FAKE_KEY}",
+            "Message": (
+                "bad request for https://ssl.bing.com/webmaster/api.svc/json/"
+                f"GetUserSites?apikey={FAKE_KEY}"
+            ),
+        },
+    )
+    async with BingClient(_key_settings(tmp_path), transport=transport) as client:
+        with pytest.raises(InvalidRequest) as raised:
+            await client.call("GetUserSites")
+
+    rendered = json.dumps(raised.value.to_dict())
+    assert FAKE_KEY not in rendered
+    assert REDACTED_CREDENTIAL in raised.value.message
+    assert REDACTED_CREDENTIAL in raised.value.details["ErrorCode"]
+
+
+async def test_an_error_carrying_no_credential_still_reads_normally(tmp_path) -> None:
+    """Covering the key must not turn ordinary failures into a wall of markers."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    async with BingClient(
+        _key_settings(tmp_path), transport=httpx.MockTransport(handler)
+    ) as client:
+        with pytest.raises(UpstreamUnavailable) as raised:
+            await client.call("GetUserSites")
+
+    assert raised.value.message == "GetUserSites: connection refused"
+
+
+async def test_a_key_needing_url_encoding_is_hidden_in_its_wire_form(tmp_path) -> None:
+    """What a proxy quotes back is the encoded key, not the literal we hold."""
+    awkward = "FAKE/KEY+DO NOT USE%2F0123456789"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"proxy could not reach {request.url}", request=request)
+
+    async with BingClient(
+        fake_settings(tmp_path, api_key=awkward), transport=httpx.MockTransport(handler)
+    ) as client:
+        with pytest.raises(UpstreamUnavailable) as raised:
+            await client.call("GetUserSites")
+
+    encoded = str(httpx.QueryParams({"v": awkward})).removeprefix("v=")
+    assert encoded not in raised.value.message
+    assert awkward not in raised.value.message
+    assert REDACTED_CREDENTIAL in raised.value.message
+
+
+async def test_a_lost_write_does_not_chain_the_raw_transport_error(tmp_path) -> None:
+    """A chained cause reaches every traceback, where ``to_dict`` cannot cover it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError(f"lost on {request.url}", request=request)
+
+    async with BingClient(
+        _key_settings(tmp_path), transport=httpx.MockTransport(handler)
+    ) as client:
+        with pytest.raises(PlanUnknownOutcome) as raised:
+            await client.call("SubmitUrl", body={"url": "x"}, mutating=True)
+
+    rendered = "".join(traceback.format_exception(raised.value))
+    assert FAKE_KEY not in rendered
+    assert raised.value.__cause__ is None
+    # The operator still learns what failed, scrubbed, and the audit trail records it.
+    assert REDACTED_CREDENTIAL in raised.value.details["cause"]
+    assert "ReadError" in raised.value.details["cause"]
+
+
+async def test_a_refreshed_credential_is_covered_on_the_call_that_uses_it(tmp_path) -> None:
+    """Reading the literals at construction would cover only the value we started with."""
+
+    class Rotating:
+        def __init__(self) -> None:
+            self.current = "FIRST-FAKE-KEY-0000000000"
+
+        def apply(self, params: dict[str, object], headers: dict[str, str]) -> None:
+            params["apikey"] = self.current
+
+        def secrets(self) -> frozenset[str]:
+            return frozenset({self.current})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"proxy could not reach {request.url}", request=request)
+
+    auth = Rotating()
+    async with BingClient(
+        _key_settings(tmp_path), transport=httpx.MockTransport(handler)
+    ) as client:
+        client._auth = auth
+        with pytest.raises(UpstreamUnavailable) as first:
+            await client.call("GetUserSites")
+        auth.current = "SECOND-FAKE-KEY-1111111111"
+        with pytest.raises(UpstreamUnavailable) as second:
+            await client.call("GetUserSites")
+
+    assert "FIRST-FAKE-KEY-0000000000" not in first.value.message
+    assert "SECOND-FAKE-KEY-1111111111" not in second.value.message
+    assert REDACTED_CREDENTIAL in second.value.message

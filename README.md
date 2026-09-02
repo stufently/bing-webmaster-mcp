@@ -212,6 +212,13 @@ hide come from the request body, so the cover does not depend on anyone predicti
 field a secret will next arrive in. The plan record on disk keeps the real value; a plan
 that lost its code could not be applied.
 
+The API key is covered at the same boundary, under its own marker
+`[redacted: API credential]`. Microsoft documents the key only as a query-string
+parameter, so every request URL carries a live credential — and a proxy naming the
+address it could not reach, or Bing quoting the request back in an error, would otherwise
+put that URL into the error message, the terminal and the audit trail. An error carrying
+no credential reads exactly as it did before.
+
 An empty answer is never presented as a measurement. Some of the older endpoints return
 an empty collection for accounts that demonstrably have data: `bing_link_counts`,
 `bing_crawl_issues` and `bing_fetched_urls` all came back empty for a site whose

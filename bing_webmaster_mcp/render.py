@@ -25,6 +25,11 @@ SECRET_FIELDS = frozenset({"AuthenticationCode", "DelegatedCode", "DnsVerificati
 # its case folded instead.
 _SECRET_KEYS = frozenset(name.replace("_", "").casefold() for name in SECRET_FIELDS)
 REDACTED = "[redacted: verification secret]"
+# The credential that authenticates the call itself, as opposed to an ownership proof
+# Bing hands back about a site. It gets its own marker because a reader who finds
+# "verification secret" in place of an API key learns the wrong thing about what leaked
+# and what has to be rotated.
+REDACTED_CREDENTIAL = "[redacted: API credential]"
 # A literal shorter than this is not searched for in free text. Bing's codes are long
 # hex strings; replacing every occurrence of a two-character value would shred an error
 # message without hiding anything that was ever a credential.
@@ -81,15 +86,20 @@ def secret_values(value: Any) -> frozenset[str]:
     return frozenset(found)
 
 
-def redact_text(value: str, secrets: Iterable[str]) -> str:
-    """Replace known secret literals wherever they appear in a piece of free text."""
+def redact_text(value: str, secrets: Iterable[str], marker: str = REDACTED) -> str:
+    """Replace known secret literals wherever they appear in a piece of free text.
+
+    ``marker`` names the kind of literal being hidden. Two kinds travel in a request -
+    an ownership proof in the body and the credential in the query string - and the
+    replacement is the only thing a reader ever sees of either.
+    """
     for secret in secrets:
         if len(secret) >= _MIN_SECRET_LENGTH:
-            value = value.replace(secret, REDACTED)
+            value = value.replace(secret, marker)
     return value
 
 
-def redact(value: Any, secrets: Iterable[str] = ()) -> Any:
+def redact(value: Any, secrets: Iterable[str] = (), marker: str = REDACTED) -> Any:
     """Hide every verification secret leaving this process, by name and by value.
 
     This is the exit boundary: a response, a write result, an error message and anything
@@ -104,19 +114,21 @@ def redact(value: Any, secrets: Iterable[str] = ()) -> Any:
             reverse=True,
         )
     )
-    return _redact(value, literals)
+    return _redact(value, literals, marker)
 
 
-def _redact(value: Any, literals: tuple[str, ...]) -> Any:
+def _redact(value: Any, literals: tuple[str, ...], marker: str) -> Any:
     if isinstance(value, dict):
         return {
-            key: REDACTED if _is_secret_key(key) and _is_present(item) else _redact(item, literals)
+            key: REDACTED
+            if _is_secret_key(key) and _is_present(item)
+            else _redact(item, literals, marker)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_redact(item, literals) for item in value]
+        return [_redact(item, literals, marker) for item in value]
     if isinstance(value, str) and literals:
-        return redact_text(value, literals)
+        return redact_text(value, literals, marker)
     return value
 
 

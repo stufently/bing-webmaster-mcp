@@ -16,6 +16,16 @@ owner's external accounts and are intentionally not automated from a developer m
   sends the write again, because the one-shot guarantee is per plan. A client-supplied
   key with a durable mapping to a plan and its result would close it. Deliberately
   deferred and recorded in `docs/product-boundaries.md`.
+- [ ] OAuth2 would take the credential out of the URL. Checked on 2026-09-02: Microsoft
+  documents no header form for the API key — every example on
+  [Getting started](https://learn.microsoft.com/en-us/bingwebmaster/getting-started) puts
+  it in the query string, and the one documented header, `Authorization: Bearer` on
+  [the OAuth2 page](https://learn.microsoft.com/en-us/bingwebmaster/oauth2), carries an
+  OAuth2 access token rather than a key. So the key stays in the query string and is
+  redacted at the exit boundary instead. Implementing OAuth2 — already designed for
+  behind `AuthProvider` — would remove the exposure at the source rather than covering
+  it. Open question for the owner: is that flow's client registration and user consent
+  worth it for a single-operator install?
 
 ## First PyPI release
 

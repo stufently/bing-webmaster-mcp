@@ -225,6 +225,11 @@ round the redaction:
 - **A write's result, and any error Bing returns.** If Bing quotes back the code it
   rejected, you get the marker in the message.
 
+A second marker, `[redacted: API credential]`, stands for the operator's Bing API key. It
+travels in the request URL, so an error quoting that URL — from a proxy, or from Bing —
+would otherwise hand you a working credential. Seeing it means the URL in that message
+was scrubbed, not that anything went wrong. Never ask the operator for the key.
+
 If you find yourself needing a code to finish a task, the task belongs to the operator
 at their terminal. Say so; do not ask for the value.
 

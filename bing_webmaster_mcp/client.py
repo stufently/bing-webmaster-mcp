@@ -22,7 +22,7 @@ from .errors import (
     RateLimited,
     UpstreamUnavailable,
 )
-from .render import redact, redact_text, secret_values
+from .render import REDACTED_CREDENTIAL, redact, redact_text, secret_values
 
 
 class _Throttle:
@@ -84,6 +84,13 @@ class BingClient:
         # the literals to hide are derived here rather than passed in by every caller: a
         # write that starts carrying a new secret is covered without anybody remembering.
         secrets = secret_values(body) if body else frozenset()
+        # The credential goes in the query string, so every URL built above carries a live
+        # one. Nothing here ever prints a URL, but a message that came from underneath - a
+        # proxy naming the address it could not reach, or Bing quoting our request back -
+        # does, and that message becomes the error, the MCP reply and the audit entry.
+        # Read after ``apply`` rather than once at construction: a provider that refreshes
+        # a token would otherwise stay covered only for the value it started with.
+        credentials = _credential_forms(self._auth.secrets())
 
         for attempt in range(1, self._settings.max_attempts + 1):
             await self._throttle.wait()
@@ -91,15 +98,24 @@ class BingClient:
                 response = await self._request(url, query, headers, body)
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                 error: BingWebmasterError = UpstreamUnavailable(
-                    redact_text(f"{method}: {exc}", secrets)
+                    _scrub(f"{method}: {exc}", secrets, credentials)
                 )
             except httpx.HTTPError as exc:
                 if mutating:
+                    # Deliberately not chained from ``exc``. A transport that names the
+                    # address it could not reach puts the credential in that exception's
+                    # own text, and a chained cause reaches every traceback anybody
+                    # formats or logs, where ``to_dict`` cannot cover it. What the
+                    # operator needs from it - what actually failed - is carried scrubbed
+                    # in ``details``, which also reaches the audit trail.
                     raise PlanUnknownOutcome(
                         f"{method}: request was sent but its outcome is unknown",
                         suggestion="inspect Bing and the audit log before creating a new plan",
-                    ) from exc
-                error = UpstreamUnavailable(redact_text(f"{method}: {exc}", secrets))
+                        details={
+                            "cause": _scrub(f"{type(exc).__name__}: {exc}", secrets, credentials)
+                        },
+                    ) from None
+                error = UpstreamUnavailable(_scrub(f"{method}: {exc}", secrets, credentials))
             else:
                 if response.status_code < 400:
                     if not mutating:
@@ -120,7 +136,7 @@ class BingClient:
                         "the write may or may not have been applied",
                         suggestion="inspect Bing and the audit log before creating a new plan",
                     )
-                error = _map_error(method, response, secrets)
+                error = _map_error(method, response, secrets, credentials)
 
             if mutating or not error.retryable or attempt == self._settings.max_attempts:
                 raise error
@@ -148,8 +164,37 @@ def _decode_success(method: str, response: httpx.Response) -> Any:
     return decode(unwrap(payload))
 
 
+def _credential_forms(credentials: Iterable[str]) -> frozenset[str]:
+    """Each credential as we hold it, and as httpx writes it into a URL.
+
+    The key is a query parameter, so the form a proxy or Bing quotes back is the encoded
+    one: a key containing ``/`` or a space reaches the wire as ``%2F`` or ``+``, and a
+    search for the literal we hold would walk straight past it. Microsoft documents no
+    alphabet for the key, so the encoding is asked of httpx rather than guessed at a
+    second time here.
+    """
+    forms: set[str] = set()
+    for credential in credentials:
+        forms.add(credential)
+        forms.add(str(httpx.QueryParams({"v": credential})).removeprefix("v="))
+    return frozenset(forms)
+
+
+def _scrub(text: str, secrets: Iterable[str], credentials: Iterable[str]) -> str:
+    """Hide both kinds of literal we ourselves put into the request, each under its name.
+
+    A verification code travels in the body; the credential travels in the URL. Either
+    can come back inside somebody else's words, and the reader of the result needs to
+    know which one it was.
+    """
+    return redact_text(redact_text(text, credentials, REDACTED_CREDENTIAL), secrets)
+
+
 def _map_error(
-    method: str, response: httpx.Response, secrets: Iterable[str] = ()
+    method: str,
+    response: httpx.Response,
+    secrets: Iterable[str] = (),
+    credentials: Iterable[str] = (),
 ) -> BingWebmasterError:
     try:
         body = response.json()
@@ -160,10 +205,12 @@ def _map_error(
     # credential. Whatever it quoted back is scrubbed before the message exists as an
     # error, so the audit trail, the MCP error and the terminal all get the same text.
     reported = message or response.reason_phrase or "request failed"
-    text = redact_text(f"{method}: {reported}", secrets)
+    text = _scrub(f"{method}: {reported}", secrets, credentials)
     details = None
     if isinstance(body, dict) and "ErrorCode" in body:
-        details = redact({"ErrorCode": body["ErrorCode"]}, secrets)
+        details = redact(
+            redact({"ErrorCode": body["ErrorCode"]}, credentials, REDACTED_CREDENTIAL), secrets
+        )
 
     if response.status_code in {401, 403}:
         return AuthFailed(

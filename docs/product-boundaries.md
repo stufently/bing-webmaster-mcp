@@ -46,6 +46,25 @@ These are dated product decisions, not missing implementation work.
   reads Microsoft's pages do not document: `Links` is verified for `GetLinkCounts`, the
   rest would be invention, and the generic "any list-valued field" test is correct for
   both shapes once single records are out of it.
+- **2026-09-02 — the API key stays in the query string.** Moving it to a header would
+  end the whole class of URL-quoting leaks at the source rather than covering them at the
+  exit. Microsoft's pages do not offer that for a key: every example on
+  [Getting started](https://learn.microsoft.com/en-us/bingwebmaster/getting-started) puts
+  it in the URL, and the only documented header form,
+  `Authorization: Bearer` on
+  [the OAuth2 page](https://learn.microsoft.com/en-us/bingwebmaster/oauth2), carries an
+  OAuth2 access token obtained through client registration and user consent — a different
+  credential, not the key in a different place. Inventing an `apikey:` or
+  `Ocp-Apim-Subscription-Key:` header would be guessing at the API. Redaction it is,
+  until OAuth2 is implemented; that work would remove the exposure as a side effect,
+  because the token would travel in a header.
+- **2026-09-02 — successful response bodies are not scanned for the credential.**
+  Redaction by literal covers error text, where a URL demonstrably arrives from a proxy
+  or from Bing's own message. Bing's success payloads return site data, not a copy of the
+  request, so searching every string of every large response for the key would cost a
+  second walk on the common path to cover a shape never observed. If a method is ever
+  seen echoing the request URL, the place to fix it is `client._decode_success`, which is
+  where the credential is known.
 - **2026-09-02 — no attempt to resolve an empty response.** Nothing in the API says
   whether an empty answer means "nothing to report" or "not reported", and this server
   does not guess: it labels the response `empty_response` and leaves the ambiguity

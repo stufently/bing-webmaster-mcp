@@ -699,3 +699,29 @@ async def test_the_audit_trail_never_receives_the_code_from_a_failed_write(tmp_p
     written = (settings.state_dir / "audit.jsonl").read_text()
     assert ROLE_CODE not in written
     assert REDACTED in written
+
+
+async def test_the_audit_trail_never_records_the_api_key(tmp_path) -> None:
+    """The key lives in the query string, so an upstream quoting our URL would log it."""
+    fake_key = "FAKE-KEY-DO-NOT-USE-0123456789"
+    settings = fake_settings(tmp_path, api_key=fake_key)
+    store = PlanStore(tmp_path, 900)
+    plan = store.create("add_site", "https://a.example", sample_args("add_site"), "x")
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            400, json={"Message": f"bad request for {request.url}"}, request=request
+        )
+    )
+    async with BingClient(settings, transport=transport) as client:
+        with pytest.raises(InvalidRequest):
+            await apply_plan(
+                plan.plan_id,
+                settings=settings,
+                store=store,
+                client=client,
+                audit=AuditLog(tmp_path),
+                limiter=RateLimiter(tmp_path, max_per_day=None),
+            )
+    entries = AuditLog(tmp_path).entries()
+    assert [entry["event"] for entry in entries] == ["plan_apply_attempted", "plan_apply_failed"]
+    assert fake_key not in json.dumps(entries)

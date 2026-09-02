@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Cover the API key itself at the same exit boundary. Microsoft documents the key only as
+  a query-string parameter, so every URL this client builds carries a live credential —
+  and the redaction that already scrubbed error text derived its literals from the
+  request *body*, where the key never is. Nothing here prints a URL, and `httpx`'s own
+  exception messages do not contain one either (measured: `ConnectError`, `ReadTimeout`,
+  `RemoteProtocolError` and `TooManyRedirects` all carry no URL). The leak is narrower
+  and real: a message that came from *underneath* — a proxy or transport naming the
+  address it could not reach — or Bing quoting our request back in its error text. Either
+  became the error message, the MCP reply, the terminal output and the audit entry
+  verbatim. The credential is now hidden in all of them, under its own marker
+  `[redacted: API credential]` rather than the verification-secret one, and the literal
+  comes from the auth provider that applied it, so an OAuth2 token added later is covered
+  by implementing one method. An error carrying no credential still reads exactly as
+  before. Three details the first pass got wrong and a review caught: the literals are
+  read on every call rather than once at construction, so a provider that refreshes a
+  token stays covered; each credential is also matched in the form httpx writes into a
+  URL, because a key holding `/` or a space reaches the wire as `%2F` or `+` and an exact
+  search for the value we hold would miss it; and a lost write no longer chains the raw
+  `httpx` exception as its cause, since `to_dict` cannot cover a `__cause__` that any
+  formatted traceback would print. What failed is carried scrubbed in the error's
+  `details.cause` instead, where the audit trail records it too.
 - Close the two ways a verification secret still left the process after it was redacted
   in reads. A plan keeps the arguments it will send, so `bing_plan_show`, `bing_plan_list`
   and `bing-wm plan show|list` were handing back the `authentication_code` an
