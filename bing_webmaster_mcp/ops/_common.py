@@ -7,7 +7,7 @@ from typing import Any
 
 from ..client import BingClient
 from ..errors import InvalidRequest
-from ..render import sanitize
+from ..render import redact_secrets, sanitize
 from ..urls import validate_http_url
 
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
@@ -45,8 +45,18 @@ async def fetch(
     params: dict[str, Any] | None = None,
     *,
     body: dict[str, Any] | None = None,
+    reveal_secrets: bool = False,
 ) -> Any:
-    return sanitize(await client.call(method, params, body=body))
+    """Call Bing and return the response with secrets hidden and untrusted text labelled.
+
+    Redaction lives here rather than in the two operations that are known to return a
+    verification code today, so a method that starts returning one tomorrow is covered
+    without anybody remembering to cover it.
+    """
+    payload = await client.call(method, params, body=body)
+    if not reveal_secrets:
+        payload = redact_secrets(payload)
+    return sanitize(payload)
 
 
 def bool_param(value: bool) -> str:

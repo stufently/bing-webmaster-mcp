@@ -5,13 +5,22 @@ from typing import Any
 from ..client import BingClient
 from ._common import bool_param, fetch, normalise_site
 
+# ``reveal_secrets`` is a parameter of these operations and deliberately not of any MCP
+# tool: the MCP schemas do not offer it, and unknown tool arguments are refused, so a
+# model cannot ask for a verification code however it is prompted. Only an operator
+# typing the CLI flag can, which is the person who needs one - to put the proof on the
+# site during onboarding.
 
-async def list_sites(client: BingClient) -> list[dict[str, Any]]:
-    return await fetch(client, "GetUserSites")
+
+async def list_sites(client: BingClient, reveal_secrets: bool = False) -> list[dict[str, Any]]:
+    return await fetch(client, "GetUserSites", reveal_secrets=reveal_secrets)
 
 
 async def site_roles(
-    client: BingClient, site_url: str, include_all_subdomains: bool = False
+    client: BingClient,
+    site_url: str,
+    include_all_subdomains: bool = False,
+    reveal_secrets: bool = False,
 ) -> list[dict[str, Any]]:
     return await fetch(
         client,
@@ -20,6 +29,7 @@ async def site_roles(
             "siteUrl": normalise_site(site_url),
             "includeAllSubdomains": bool_param(include_all_subdomains),
         },
+        reveal_secrets=reveal_secrets,
     )
 
 
@@ -27,9 +37,11 @@ async def site_moves(client: BingClient, site_url: str) -> list[dict[str, Any]]:
     return await fetch(client, "GetSiteMoves", {"siteUrl": normalise_site(site_url)})
 
 
-async def show_site(client: BingClient, site_url: str) -> dict[str, Any] | None:
+async def show_site(
+    client: BingClient, site_url: str, reveal_secrets: bool = False
+) -> dict[str, Any] | None:
     wanted = normalise_site(site_url).casefold()
-    for site in await list_sites(client):
+    for site in await list_sites(client, reveal_secrets=reveal_secrets):
         url = site.get("Url")
         if isinstance(url, dict):
             url = url.get("value")

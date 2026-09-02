@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from typing import Any
 
@@ -20,6 +21,7 @@ from bing_webmaster_mcp.ops import (
     traffic,
 )
 from bing_webmaster_mcp.ops._common import normalise_site
+from bing_webmaster_mcp.render import REDACTED
 
 
 @pytest.mark.parametrize(
@@ -296,3 +298,101 @@ def test_ipv6_site_keeps_its_brackets() -> None:
 
 def test_bare_host_with_a_port_is_not_read_as_a_scheme() -> None:
     assert normalise_site("example.com:8443") == "https://example.com:8443"
+
+
+SITE_WITH_SECRETS = {
+    "Url": "https://a.example/",
+    "IsVerified": True,
+    "AuthenticationCode": "auth-secret",
+    "DnsVerificationCode": "dns-secret",
+}
+
+
+async def test_listing_sites_never_returns_verification_secrets_by_default(tmp_path) -> None:
+    """Enumerating sites does not need the proofs that let anyone claim them."""
+    transport = bing_transport({"GetUserSites": [dict(SITE_WITH_SECRETS)]})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        result = await sites.list_sites(client)
+    serialised = json.dumps(result)
+    assert "auth-secret" not in serialised
+    assert "dns-secret" not in serialised
+    assert result[0]["AuthenticationCode"] == REDACTED
+    assert result[0]["DnsVerificationCode"] == REDACTED
+    assert result[0]["IsVerified"] is True
+
+
+async def test_an_operator_who_asks_by_name_still_gets_the_codes(tmp_path) -> None:
+    transport = bing_transport({"GetUserSites": [dict(SITE_WITH_SECRETS)]})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        result = await sites.list_sites(client, reveal_secrets=True)
+    assert result[0]["AuthenticationCode"] == "auth-secret"
+    assert result[0]["DnsVerificationCode"] == "dns-secret"
+
+
+async def test_showing_one_site_redacts_it_too(tmp_path) -> None:
+    transport = bing_transport({"GetUserSites": [dict(SITE_WITH_SECRETS)]})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        result = await sites.show_site(client, "a.example")
+    assert result is not None
+    assert result["AuthenticationCode"] == REDACTED
+
+
+async def test_a_delegation_code_on_a_site_role_is_redacted(tmp_path) -> None:
+    rows = [{"Email": "a@b.example", "DelegatedCode": "delegation-secret", "Role": 0}]
+    transport = bing_transport({"GetSiteRoles": rows})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        result = await sites.site_roles(client, "a.example")
+    assert "delegation-secret" not in json.dumps(result)
+    assert result[0]["DelegatedCode"] == REDACTED
+    assert result[0]["Email"] == "a@b.example"
+
+
+async def test_redaction_covers_every_read_not_only_the_two_that_carry_codes(tmp_path) -> None:
+    """The boundary is the fetch helper, so a method that starts leaking is covered."""
+    transport = bing_transport({"GetCrawlSettings": {"AuthenticationCode": "surprise"}})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        result = await crawl.crawl_settings(client, "a.example")
+    assert result == {"AuthenticationCode": REDACTED}
+
+
+async def test_url_info_says_when_bing_reported_no_http_status(tmp_path) -> None:
+    """HttpStatus 0 is 'not reported'; IsPage true must not read as a working page."""
+    row = {"Url": "https://a.example/gone", "HttpStatus": 0, "IsPage": True}
+    transport = bing_transport({"GetUrlInfo": row})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        result = await crawl.url_info(client, "a.example", "https://a.example/gone")
+    assert result["http_status_reported"] is False
+    assert "not reported" in result["http_status_note"]
+    assert result["HttpStatus"] == 0
+    assert result["IsPage"] is True
+
+
+@pytest.mark.parametrize("status", [200, 404, 500])
+async def test_url_info_marks_a_status_bing_did_report(tmp_path, status: int) -> None:
+    transport = bing_transport({"GetUrlInfo": {"HttpStatus": status}})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        result = await crawl.url_info(client, "a.example", "https://a.example/p")
+    assert result["http_status_reported"] is True
+    assert "http_status_note" not in result
+
+
+async def test_a_row_without_an_http_status_field_is_left_alone(tmp_path) -> None:
+    transport = bing_transport({"GetUrlInfo": {"IsPage": True}})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        result = await crawl.url_info(client, "a.example", "https://a.example/p")
+    assert result == {"IsPage": True}
+
+
+async def test_every_child_url_row_is_labelled(tmp_path) -> None:
+    rows = [{"HttpStatus": 0, "IsPage": True}, {"HttpStatus": 200, "IsPage": True}]
+    transport = bing_transport({"GetChildrenUrlInfo": rows})
+    async with BingClient(fake_settings(tmp_path), transport=transport) as client:
+        result = await crawl.children_url_info(client, "a.example", "https://a.example/d")
+    assert [row["http_status_reported"] for row in result] == [False, True]
+
+
+@pytest.mark.parametrize("status", [True, "0", None])
+def test_an_unreadable_http_status_is_not_reported_either(status: Any) -> None:
+    annotated = crawl.annotate_http_status({"HttpStatus": status})
+    assert annotated["http_status_reported"] is False
+    assert annotated["HttpStatus"] == status

@@ -289,3 +289,64 @@ def test_indexnow_key_checks_an_existing_key_file(tmp_path, monkeypatch) -> None
     result = CliRunner().invoke(cli.main, ["indexnow", "key", "a.example", "--key", key, "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["key_file"] == {"checked": True, "present": True}
+
+
+SITE_WITH_SECRETS = {
+    "Url": "https://a.example",
+    "IsVerified": True,
+    "AuthenticationCode": "auth-secret",
+    "DnsVerificationCode": "dns-secret",
+}
+
+
+def test_sites_list_redacts_verification_codes(tmp_path, monkeypatch) -> None:
+    transport = bing_transport({"GetUserSites": [dict(SITE_WITH_SECRETS)]})
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: transport)
+    result = CliRunner().invoke(cli.main, ["sites", "list", "--json"])
+    assert result.exit_code == 0, result.output
+    assert "auth-secret" not in result.output
+    assert json.loads(result.stdout)[0]["AuthenticationCode"] == "[redacted: verification secret]"
+
+
+def test_the_operator_can_reveal_them_with_an_explicit_flag(tmp_path, monkeypatch) -> None:
+    transport = bing_transport({"GetUserSites": [dict(SITE_WITH_SECRETS)]})
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: transport)
+    result = CliRunner().invoke(
+        cli.main, ["sites", "list", "--reveal-verification-codes", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)[0]["AuthenticationCode"] == "auth-secret"
+
+
+def test_an_empty_read_prints_the_silence_note_without_spoiling_the_json(
+    tmp_path, monkeypatch
+) -> None:
+    transport = bing_transport({"GetLinkCounts": {"Links": [], "TotalPages": 0}})
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: transport)
+    result = CliRunner().invoke(cli.main, ["links", "counts", "a.example", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {"Links": [], "TotalPages": 0}
+    assert "not a measurement" in result.stderr.casefold()
+
+
+def test_a_read_that_returned_rows_prints_no_note(tmp_path, monkeypatch) -> None:
+    rows = {"Links": [{"Url": "https://a"}], "TotalPages": 1}
+    transport = bing_transport({"GetLinkCounts": rows})
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: transport)
+    result = CliRunner().invoke(cli.main, ["links", "counts", "a.example", "--json"])
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+
+
+def test_url_info_labels_a_status_bing_did_not_report(tmp_path, monkeypatch) -> None:
+    transport = bing_transport({"GetUrlInfo": {"HttpStatus": 0, "IsPage": True}})
+    monkeypatch.setattr(cli, "_load_settings", lambda **kwargs: fake_settings(tmp_path))
+    monkeypatch.setattr(cli, "_transport", lambda: transport)
+    command = ["index", "url", "a.example", "https://a.example/p", "--json"]
+    result = CliRunner().invoke(cli.main, command)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["http_status_reported"] is False

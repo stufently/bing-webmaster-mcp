@@ -21,6 +21,21 @@ These are dated product decisions, not missing implementation work.
   anything else would be a guess wearing Bing's authority, so `bing_crawl_issues`
   reports none. The 404/403 split is the opposite case: Bing sends the exact status in
   `HttpCode` on the same row, so `http_404` and `http_403` are read off real data.
+- **2026-09-02 — no way to reveal a verification secret over MCP.** `AuthenticationCode`,
+  `DnsVerificationCode` and `DelegatedCode` are ownership proofs, so they are redacted in
+  every response and the reveal switch exists only as a CLI flag. A tool argument would
+  be model-controlled: text a read tool returned could then talk a model into fetching a
+  code and writing it into a transcript, a log or a report. The operator who needs one is
+  the person publishing the proof on the site, and they are at a terminal.
+- **2026-09-02 — no attempt to resolve an empty response.** Nothing in the API says
+  whether an empty answer means "nothing to report" or "not reported", and this server
+  does not guess: it labels the response `empty_response` and leaves the ambiguity
+  visible. Corroborating by calling other endpoints, or by fetching the site, would
+  invent a coverage signal Bing does not provide.
+- **2026-09-02 — no derived HTTP status for a URL.** `UrlInfo.HttpStatus` is 0 when Bing
+  reports no status; the row is labelled `http_status_reported: false` and the raw 0 is
+  kept. Fetching the URL to fill the gap would report this project's own request as if it
+  were Bing's observation, on data whose date is `LastCrawledDate`, not today.
 - **2026-08-25 — no obsolete deep-link methods.** Microsoft marks
   `GetDeepLinkAlgoUrls`, `GetDeepLink`, and `UpdateDeepLink` obsolete.
 - **2026-08-25 — OAuth2 is designed for but not implemented.** API-key authentication

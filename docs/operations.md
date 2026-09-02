@@ -5,7 +5,9 @@ accept `--json`; lists render as human-readable tables otherwise.
 
 ## CLI
 
-- `bing-wm sites list|show|roles|moves`
+- `bing-wm sites list|show|roles|moves`; `list`, `show` and `roles` also take
+  `--reveal-verification-codes`, which prints the ownership proofs that are otherwise
+  redacted (see [Verification secrets are redacted](#verification-secrets-are-redacted))
 - `bing-wm traffic queries|query|query-pages|query-page|pages|page|rank`
 - `bing-wm index url|url-traffic|children|children-traffic`
 - `bing-wm crawl stats|issues|settings|fetched|fetched-details`
@@ -50,6 +52,48 @@ The reviewed path stays available in both modes and is the only path when
 - `bing_query_parameters`, `bing_geo_settings`
 - `bing_link_counts`, `bing_url_links`, `bing_connected_pages`
 - `bing_keyword`, `bing_keyword_stats`, `bing_related_keywords`
+
+### An empty read is not a zero
+
+Several of the older endpoints answer some accounts with an empty collection while a
+different endpoint reports plenty for the same site at the same moment: on a live
+account `bing_link_counts`, `bing_crawl_issues` and `bing_fetched_urls` all came back
+empty for a site whose `bing_crawl_stats` reported `InLinks: 1700` and `CrawlErrors: 4`
+in the same minute. Nothing in the payload distinguishes "Bing has nothing to report"
+from "Bing reported nothing", so the difference is labelled rather than guessed:
+
+- **MCP** — the result gains a sibling key beside `result`:
+  `"empty_response": {"rows_returned": 0, "measured": false, "note": "…"}`. `result`
+  keeps exactly the shape Bing's response had. The key is present only on read tools and
+  only when the response carried row collections and every one of them was empty; a
+  single record such as `bing_url_info` or a quota is never called empty, because a zero
+  in it is a reading.
+- **CLI** — the same note goes to stderr, so a `--json` pipe stays parseable.
+
+Report it as "Bing returned nothing", never as "no problems found".
+
+### Verification secrets are redacted
+
+`GetUserSites` returns `AuthenticationCode` and `DnsVerificationCode` beside every site,
+and `GetSiteRoles` returns `DelegatedCode`. These are ownership proofs — whoever holds
+one can claim the site in another Bing account — and no read, audit or report needs
+them. They are replaced with `[redacted: verification secret]` in every response, from
+every method, in both the MCP server and the CLI. A field Bing left `null` stays `null`
+rather than acquiring a marker that would imply a code exists.
+
+The only way to see one is `bing-wm sites list|show|roles --reveal-verification-codes`,
+typed by an operator who is about to publish the proof on the site. No MCP tool takes
+that flag and unknown tool arguments are refused, so no model — and no text a model
+read — can ask for a code.
+
+### `HttpStatus: 0` means Bing reported no status
+
+`GetUrlInfo` returns `HttpStatus: 0` for a URL it holds crawl history for but no status
+on; it is not `200` and not a status code. `bing_url_info` and `bing_children_url_info`
+therefore add `http_status_reported` to every row, plus an `http_status_note` when it is
+`false`. The raw `HttpStatus` is kept. `IsPage: true` with `http_status_reported: false`
+means Bing once saw a page there, not that the URL works now — this has been observed on
+a URL that returns 404 today.
 
 `bing_crawl_issues` returns `{total, categories, http_codes, issues}`. Each row in
 `issues` keeps every field Bing sent and gains a lower-case `categories` list, plus

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Redact the verification secrets Bing returns beside a site. `GetUserSites` sends
+  `AuthenticationCode` and `DnsVerificationCode` and `GetSiteRoles` sends
+  `DelegatedCode`; these are ownership proofs, and listing 74 sites was putting 148 of
+  them into a caller's transcript, logs and reports for a read that does not need one.
+  They now come back as `[redacted: verification secret]` from every read, in the MCP
+  server and the CLI alike, because the redaction sits in the shared fetch helper rather
+  than in the two operations known to carry a code today. A field Bing left `null` stays
+  `null`. The only way to see one is `bing-wm sites list|show|roles
+  --reveal-verification-codes`: no MCP tool takes that argument and unknown tool
+  arguments are refused, so no model, and no text a model read, can ask for a code.
+- Label a read that returned nothing, so silence cannot be reported as a clean bill of
+  health. Several older endpoints answer some accounts empty while another endpoint
+  reports plenty for the same site: `bing_link_counts`, `bing_crawl_issues` and
+  `bing_fetched_urls` all came back empty for a site whose `bing_crawl_stats` reported
+  `InLinks: 1700` and `CrawlErrors: 4` in the same minute. Such a result now carries
+  `empty_response: {rows_returned: 0, measured: false, note: …}` beside `result` over
+  MCP, and the same note on stderr at the CLI. `result` keeps the shape Bing's response
+  had. A single record such as `bing_url_info` or a quota is never called empty: a zero
+  in it is a reading, not a silence.
+- Say when Bing reports no HTTP status for a URL. `GetUrlInfo` returns `HttpStatus: 0`
+  with `IsPage: true` for URLs that answer 404 today, which reads as a healthy page.
+  `bing_url_info` and `bing_children_url_info` now add `http_status_reported` to every
+  row, with an `http_status_note` when it is false, and keep the raw `HttpStatus`.
+
 - Split a crawl issue Bing flagged `Code4xx` into `http_404` or `http_403` using the
   `HttpCode` on the same row, beside the broad `http_4xx` rather than instead of it, so
   a caller counting 4xx rows keeps counting all of them. Microsoft's flags enum has no

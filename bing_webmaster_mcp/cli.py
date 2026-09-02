@@ -17,6 +17,7 @@ from .apply import apply_plan, execute_write
 from .audit import AuditLog
 from .client import BingClient
 from .config import Settings
+from .emptiness import EMPTY_RESPONSE_NOTE, returned_no_rows
 from .errors import BingWebmasterError, InvalidRequest
 from .limits import RateLimiter
 from .ops import (
@@ -117,7 +118,13 @@ def _emit_table(rows: list[Any]) -> None:
 async def _read(function: Callable[..., Awaitable[Any]], *args: Any) -> Any:
     settings = _load_settings()
     async with BingClient(settings, transport=_transport()) as client:
-        return await function(client, *args)
+        result = await function(client, *args)
+    # On stderr, so it reaches a person reading the terminal without getting into the
+    # JSON a script is parsing. Only reads are labelled: a write that returns nothing
+    # returns nothing because it had nothing to say.
+    if returned_no_rows(result):
+        click.echo(f"note: {EMPTY_RESPONSE_NOTE}", err=True)
+    return result
 
 
 def _limit(result: Any, limit: int | None) -> Any:
@@ -233,28 +240,46 @@ def sites_group() -> None:
     """Sites, verification and delegated roles."""
 
 
+# Verification codes are ownership proofs, so they are redacted everywhere and this flag
+# is the only way to see one. It exists at the CLI and nowhere else: the operator putting
+# the proof on the site needs it, and no MCP tool - hence no model, and no text a model
+# read - can ask for it.
+reveal_option = click.option(
+    "--reveal-verification-codes",
+    "reveal_secrets",
+    is_flag=True,
+    help="Print the verification/delegation secrets instead of redacting them. "
+    "Treat the output as credentials: anyone holding one can claim the site.",
+)
+
+
 @sites_group.command("list")
+@reveal_option
 @json_option
 @guarded
-def sites_list(as_json: bool) -> None:
-    emit(run_async(_read(sites.list_sites)), as_json)
+def sites_list(reveal_secrets: bool, as_json: bool) -> None:
+    emit(run_async(_read(sites.list_sites, reveal_secrets)), as_json)
 
 
 @sites_group.command("show")
 @click.argument("site")
+@reveal_option
 @json_option
 @guarded
-def sites_show(site: str, as_json: bool) -> None:
-    emit(run_async(_read(sites.show_site, site)), as_json)
+def sites_show(site: str, reveal_secrets: bool, as_json: bool) -> None:
+    emit(run_async(_read(sites.show_site, site, reveal_secrets)), as_json)
 
 
 @sites_group.command("roles")
 @click.argument("site")
 @click.option("--include-all-subdomains", is_flag=True)
+@reveal_option
 @json_option
 @guarded
-def sites_roles(site: str, include_all_subdomains: bool, as_json: bool) -> None:
-    emit(run_async(_read(sites.site_roles, site, include_all_subdomains)), as_json)
+def sites_roles(
+    site: str, include_all_subdomains: bool, reveal_secrets: bool, as_json: bool
+) -> None:
+    emit(run_async(_read(sites.site_roles, site, include_all_subdomains, reveal_secrets)), as_json)
 
 
 @sites_group.command("moves")

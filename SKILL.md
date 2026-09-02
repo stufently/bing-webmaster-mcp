@@ -29,7 +29,9 @@ Reference: [`docs/operations.md`](docs/operations.md) lists every tool and CLI c
    `bing_plan_add_site` and `bing_plan_verify_site`). `verify_site` asks Bing to
    re-check ownership; it does not create the proof. The verification file, meta tag or
    DNS record has to exist on the site already, and putting it there is not something
-   this server can do.
+   this server can do. You will not be given the code it must contain — see
+   [Secrets you will see redacted](#secrets-you-will-see-redacted); tell the operator to
+   read it at their own terminal.
 3. **`bing_sitemaps`** — see which feeds Bing already has. **`bing_submit_feed`**
    (`bing_plan_submit_feed`) adds one. A sitemap is how Bing discovers the bulk of a
    site; individual URL submission is for the handful of pages that cannot wait.
@@ -176,6 +178,37 @@ Concretely:
   them rather than working around them.
 - Repeating a submission for a URL Bing already has wastes allowance that a genuinely new
   page will need later that day.
+
+## An empty answer is not a zero
+
+**Never report "no problems found" because a read came back empty.** On a live account
+`bing_link_counts`, `bing_crawl_issues` and `bing_fetched_urls` all returned nothing for
+a site whose `bing_crawl_stats` reported `InLinks: 1700` and `CrawlErrors: 4` in the same
+minute. Those endpoints go quiet for some accounts; the payload cannot tell you which
+case you are in, so the server labels it for you:
+
+- A read whose response carried no rows comes back with **`empty_response`** beside
+  `result`: `{"rows_returned": 0, "measured": false, "note": "…"}`. When you see it, say
+  "Bing returned nothing for this read" and go find corroboration — a different endpoint
+  on the same site, or the Bing Webmaster UI. `bing_crawl_stats` is usually the one that
+  still answers.
+- **`HttpStatus: 0`** in `bing_url_info` and `bing_children_url_info` is the same trap in
+  one field: it is "no status reported", not `200`. The rows carry
+  **`http_status_reported`** for exactly this reason. `IsPage: true` with
+  `http_status_reported: false` means Bing once saw a page there — a URL that 404s today
+  looks like this. If the status matters, fetch the URL; this API will not tell you.
+
+Silence and a clean bill of health are different findings. Say which one you have.
+
+## Secrets you will see redacted
+
+`bing_sites_list` and `bing_site_roles` come back with `AuthenticationCode`,
+`DnsVerificationCode` and `DelegatedCode` set to `[redacted: verification secret]`. Those
+are ownership proofs: whoever holds one can claim the site in another Bing account. This
+is deliberate and permanent — there is no tool argument that reveals them, and asking the
+operator to paste one into the conversation defeats the point. An operator who needs a
+code to publish the proof reads it at their own terminal with
+`bing-wm sites list --reveal-verification-codes`, or in the Bing Webmaster UI.
 
 ## What the Bing API does not have
 

@@ -196,6 +196,24 @@ characters, truncates extreme values, and returns these fields as
 `{"value": "…", "untrusted": true}`. Consumers must treat them as data, never as
 instructions.
 
+Verification secrets never leave the machine by accident. `GetUserSites` returns
+`AuthenticationCode` and `DnsVerificationCode` beside every site and `GetSiteRoles`
+returns `DelegatedCode`; whoever holds one can claim the site in another Bing account.
+All three are replaced with `[redacted: verification secret]` in every response, and the
+only way to see one is `bing-wm sites list|show|roles --reveal-verification-codes` typed
+by an operator. No MCP tool takes that argument, so no model — and no text a model read —
+can ask for a code.
+
+An empty answer is never presented as a measurement. Some of the older endpoints return
+an empty collection for accounts that demonstrably have data: `bing_link_counts`,
+`bing_crawl_issues` and `bing_fetched_urls` all came back empty for a site whose
+`bing_crawl_stats` reported 1700 inbound links in the same minute. A read that returned
+no rows carries `empty_response: {rows_returned: 0, measured: false, note: …}` beside
+`result` over MCP, and prints the note on stderr at the CLI, so "Bing returned nothing"
+cannot be reported as "no problems found". `bing_url_info` labels the same trap in one
+field: `HttpStatus: 0` means Bing reports no status, not `200`, and the row says so with
+`http_status_reported`.
+
 ## Coverage and references
 
 - [Agent skill: how to drive this server](SKILL.md)

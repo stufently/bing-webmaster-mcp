@@ -107,6 +107,14 @@ must fit it.
 
 ## Verified response types
 
+- `Site` (returned by `GetUserSites`): `AuthenticationCode`, `DnsVerificationCode`,
+  `IsVerified`, `Url`. Source:
+  <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.site?view=bing-webmaster-dotnet>,
+  fetched 2026-09-02. The first two are the ownership proofs a site must publish in its
+  verification file or meta tag and in a DNS TXT record; anyone holding one can claim the
+  site in another Bing account. `SiteRoles.DelegatedCode` is the same kind of value —
+  Microsoft's `AddSiteRoles` takes it as `authenticationCode`. All three are redacted in
+  every response this project returns; see `docs/operations.md`.
 - `UrlWithCrawlIssues` (returned by `GetCrawlIssues`): `HttpCode` (Int32), `InLinks`,
   `Issues`, `Url`. Source:
   <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.urlwithcrawlissues?view=bing-webmaster-dotnet>,
@@ -126,6 +134,19 @@ must fit it.
   <https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.urlinfo?view=bing-webmaster-dotnet>,
   fetched 2026-09-01. There is no indexing-status, robots-directive or content-changed
   property.
+  `HttpStatus` is an `Int32` and Microsoft documents no sentinel for it. **Observed on a
+  live account, 2026-09-02:** `GetUrlInfo` returned `HttpStatus: 0` with `IsPage: true`
+  and a `LastCrawledDate` for a URL that answers 404 today. Zero is not a status code, so
+  this project reads it as "Bing reported no status" and labels the row
+  `http_status_reported: false` rather than passing a number a caller would read as one.
+  Nothing is derived: the raw `HttpStatus` is kept, and the real status is not fetched.
+- **Empty responses, observed on a live account, 2026-09-02.** For the same site and in
+  the same minute, `GetLinkCounts` returned `{"Links": [], "TotalPages": 0}`,
+  `GetCrawlIssues` returned `[]` and `GetFetchedUrls` returned `[]`, while `GetCrawlStats`
+  reported `InLinks: 1700`, `CrawlErrors: 4` and `Code4xx: 1`. Microsoft documents no way
+  to distinguish "nothing to report" from "not reported"; there is no status field, no
+  coverage flag and no error. The reads therefore label an empty response instead of
+  presenting it as a measurement.
 - `QueryStats` (returned by `GetQueryStats`): `AvgClickPosition`,
   `AvgImpressionPosition`, `Clicks`, `Date`, `Impressions`, `Query`.
   `RankAndTrafficStats` (returned by `GetRankAndTrafficStats`): `Clicks`, `Date`,

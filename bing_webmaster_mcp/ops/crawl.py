@@ -147,8 +147,36 @@ def summarise_crawl_issues(rows: Any) -> dict[str, Any]:
     }
 
 
+HTTP_STATUS_NOT_REPORTED_NOTE = (
+    "Bing reports no HTTP status for this URL: HttpStatus 0 is 'not reported', not a "
+    "status code, and it is not 200. The other fields describe what Bing recorded at "
+    "LastCrawledDate and say nothing about the URL now - IsPage true with HttpStatus 0 "
+    "has been observed on a URL that returns 404 today. Fetch the URL to learn its real "
+    "status; this API will not tell you."
+)
+
+
+def annotate_http_status(row: Any) -> Any:
+    """Say whether Bing actually reported a status, so a 0 cannot be read as one.
+
+    ``UrlInfo.HttpStatus`` is an ``Int32`` with no documented sentinel, and Bing returns
+    0 for a URL it has crawl history for but no status on. Zero is not a status code, so
+    the flag is always present and the row keeps every field Bing sent: the fix for an
+    unreadable number is to label it, not to delete it and leave the caller guessing.
+    """
+    if not isinstance(row, dict) or "HttpStatus" not in row:
+        return row
+    status = row["HttpStatus"]
+    reported = isinstance(status, int) and not isinstance(status, bool) and status != 0
+    annotated: dict[str, Any] = {**row, "http_status_reported": reported}
+    if not reported:
+        annotated["http_status_note"] = HTTP_STATUS_NOT_REPORTED_NOTE
+    return annotated
+
+
 async def url_info(client: BingClient, site_url: str, url: str) -> dict[str, Any]:
-    return await fetch(client, "GetUrlInfo", {"siteUrl": normalise_site(site_url), "url": url})
+    row = await fetch(client, "GetUrlInfo", {"siteUrl": normalise_site(site_url), "url": url})
+    return annotate_http_status(row)
 
 
 async def url_traffic_info(client: BingClient, site_url: str, url: str) -> dict[str, Any]:
@@ -178,7 +206,10 @@ async def children_url_info(
         "page": page,
         "filterProperties": filters,
     }
-    return await fetch(client, "GetChildrenUrlInfo", body=body)
+    rows = await fetch(client, "GetChildrenUrlInfo", body=body)
+    if not isinstance(rows, list):
+        return rows
+    return [annotate_http_status(row) for row in rows]
 
 
 async def children_url_traffic_info(

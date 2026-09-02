@@ -61,6 +61,8 @@ def test_product_boundaries_record_every_deliberate_exclusion() -> None:
         "OAuth2",
         "scheduler",
         "noindex",
+        "verification secret",
+        "HttpStatus",
     ):
         assert term in text
     assert "2026-08-25" in text
@@ -105,3 +107,18 @@ def test_social_preview_has_githubs_required_dimensions() -> None:
     data = (ROOT / "docs" / "assets" / "social-preview.png").read_bytes()
     assert data.startswith(b"\x89PNG\r\n\x1a\n")
     assert struct.unpack(">II", data[16:24]) == (1280, 640)
+
+
+def test_the_empty_response_label_is_documented_where_a_reader_will_look() -> None:
+    for path in ("docs/operations.md", "SKILL.md"):
+        text = (ROOT / path).read_text()
+        assert "empty_response" in text, path
+        assert "http_status_reported" in text, path
+
+
+def test_the_reveal_flag_and_the_redaction_are_documented() -> None:
+    operations = (ROOT / "docs" / "operations.md").read_text()
+    assert "--reveal-verification-codes" in operations
+    assert "AuthenticationCode" in operations
+    assert "DnsVerificationCode" in operations
+    assert "DelegatedCode" in operations

@@ -245,3 +245,90 @@ async def test_the_local_indexnow_key_tool_admits_it_reaches_an_outside_host() -
     tools = {tool.name: tool for tool in (await mcp_server.list_tools()).tools}
     assert tools["bing_indexnow_key_plan"].annotations.open_world_hint is True
     assert tools["bing_crawl_issues"].annotations.open_world_hint is False
+
+
+async def test_an_empty_read_is_labelled_as_silence_not_as_a_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bing returning nothing must not be readable as Bing reporting nothing wrong."""
+
+    async def empty(name: str, arguments: dict) -> dict:
+        return {"Links": [], "TotalPages": 0}
+
+    monkeypatch.setattr(mcp_server, "_call_read", empty)
+    result = await mcp_server.call_tool("bing_link_counts", {"site_url": "https://a.example"})
+    assert result.is_error is not True
+    label = result.structured_content["empty_response"]
+    assert label["measured"] is False
+    assert label["rows_returned"] == 0
+    assert "not a measurement" in label["note"].casefold()
+    assert label["note"] in result.content[0].text
+    assert result.structured_content["result"] == {"Links": [], "TotalPages": 0}
+
+
+async def test_a_read_that_returned_rows_carries_no_empty_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def rows(name: str, arguments: dict) -> dict:
+        return {"Links": [{"Url": "https://a.example"}], "TotalPages": 1}
+
+    monkeypatch.setattr(mcp_server, "_call_read", rows)
+    result = await mcp_server.call_tool("bing_link_counts", {"site_url": "https://a.example"})
+    assert "empty_response" not in result.structured_content
+
+
+async def test_a_write_result_is_never_labelled_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Only a read can be silent; a write returning nothing simply returned nothing."""
+    monkeypatch.setenv("BING_WM_API_KEY", "test-key")
+    monkeypatch.setenv("BING_WM_STATE_DIR", str(tmp_path))
+
+    async def applied(operation: str, arguments: dict) -> dict:
+        return {"plan_id": "p", "operation": operation, "result": []}
+
+    monkeypatch.setattr(mcp_server, "_call_write", applied)
+    result = await mcp_server.call_tool("bing_add_site", {"site_url": "https://a.example"})
+    assert "empty_response" not in result.structured_content
+
+
+def test_every_read_description_warns_that_an_empty_response_is_not_an_answer() -> None:
+    for name in mcp_server.READ_TOOLS:
+        description = mcp_server.TOOL_SPECS[name].description.casefold()
+        assert "empty_response" in description
+        assert "no problems found" in description
+
+
+def test_no_mcp_tool_offers_a_way_to_reveal_a_verification_secret() -> None:
+    """The codes are credentials, so no prompt and no injected text can ask for one."""
+    for spec in mcp_server.TOOL_SPECS.values():
+        assert "reveal_secrets" not in spec.schema["properties"]
+        assert "reveal_verification_codes" not in spec.schema["properties"]
+
+
+def test_the_sites_descriptions_say_the_codes_are_secret_and_withheld() -> None:
+    for name in ("bing_sites_list", "bing_site_roles"):
+        description = mcp_server.TOOL_SPECS[name].description.casefold()
+        assert "secret" in description
+        assert "redact" in description
+    listing = mcp_server.TOOL_SPECS["bing_sites_list"].description
+    assert "--reveal-verification-codes" in listing
+
+
+async def test_asking_a_read_tool_to_reveal_secrets_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unreachable(name: str, arguments: dict) -> dict:  # pragma: no cover
+        raise AssertionError("the argument must be refused before Bing is called")
+
+    monkeypatch.setattr(mcp_server, "_call_read", unreachable)
+    result = await mcp_server.call_tool("bing_sites_list", {"reveal_secrets": True})
+    assert result.is_error is True
+    assert result.structured_content["code"] == "INVALID_REQUEST"
+
+
+def test_the_url_info_descriptions_explain_a_zero_http_status() -> None:
+    for name in ("bing_url_info", "bing_children_url_info"):
+        description = mcp_server.TOOL_SPECS[name].description
+        assert "http_status_reported" in description
+        assert "HttpStatus is 0" in description
